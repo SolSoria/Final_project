@@ -4,6 +4,7 @@ import { WebSocketServer } from "ws";
 import { storage } from "./storage";
 import { insertPatientSchema, insertSessionSchema, insertRealtimeSchema, insertMlPredictionSchema } from "@shared/schema";
 import { randomForestModel } from "./ml/randomForest";
+import { ClinicalReportService } from "./pdf/clinical-report";
 import { z } from "zod";
 
 export async function registerRoutes(app: Express): Promise<Server> {
@@ -247,6 +248,114 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Timeline error:", error);
       res.status(500).json({ error: "Failed to fetch timeline events" });
+    }
+  });
+
+  // PDF Export Routes
+  const reportService = new ClinicalReportService();
+
+  // Generate PDF report for patient
+  app.get("/api/export/pdf/:patientId", async (req, res) => {
+    try {
+      const patientId = req.params.patientId;
+      const includeML = req.query.includeML === 'true';
+      const daysBack = parseInt(req.query.daysBack as string) || 30;
+
+      // Get patient data
+      const patient = await storage.getPatient(patientId);
+      if (!patient) {
+        return res.status(404).json({ error: "Patient not found" });
+      }
+
+      // Get sessions for the specified time range
+      const sessions = await storage.getSessions(patientId);
+      const cutoffDate = new Date();
+      cutoffDate.setDate(cutoffDate.getDate() - daysBack);
+      
+      const filteredSessions = sessions.filter(session => 
+        new Date(session.date) >= cutoffDate
+      );
+
+      if (filteredSessions.length === 0) {
+        return res.status(404).json({ error: "No sessions found in the specified date range" });
+      }
+
+      // Get ML predictions if requested
+      let mlPredictions: any[] = [];
+      if (includeML) {
+        mlPredictions = await storage.getMlPredictions(patientId);
+      }
+
+      // Generate the report
+      const reportBuffer = await reportService.generateReport({
+        patient,
+        sessions: filteredSessions,
+        mlPredictions,
+        dateRange: {
+          start: cutoffDate,
+          end: new Date()
+        },
+        includeML
+      });
+
+      // Set response headers for PDF download
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="clinical-report-${patient.name.replace(/\s+/g, '-')}-${new Date().toISOString().split('T')[0]}.pdf"`);
+      
+      res.send(reportBuffer);
+    } catch (error) {
+      console.error("PDF export error:", error);
+      res.status(500).json({ error: "Failed to generate report" });
+    }
+  });
+
+  // Generate quick report for latest session
+  app.get("/api/export/session/:sessionId", async (req, res) => {
+    try {
+      const sessionId = req.params.sessionId;
+      const includeML = req.query.includeML === 'true';
+
+      // Get session data
+      const session = await storage.getSession(sessionId);
+      if (!session) {
+        return res.status(404).json({ error: "Session not found" });
+      }
+
+      // Get patient data
+      const patient = await storage.getPatient(session.patientId);
+      if (!patient) {
+        return res.status(404).json({ error: "Patient not found" });
+      }
+
+      // Get ML prediction if requested
+      let mlPredictions: any[] = [];
+      if (includeML) {
+        const mlPrediction = await storage.getMlPredictionForSession(sessionId);
+        if (mlPrediction) {
+          mlPredictions = [mlPrediction];
+        }
+      }
+
+      // Generate the report for single session
+      const reportBuffer = await reportService.generateReport({
+        patient,
+        sessions: [session],
+        mlPredictions,
+        dateRange: {
+          start: new Date(session.date),
+          end: new Date(session.date)
+        },
+        includeML
+      });
+
+      // Set response headers for PDF download
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="session-report-${patient.name.replace(/\s+/g, '-')}-${new Date(session.date).toISOString().split('T')[0]}.pdf"`);
+      
+      res.send(reportBuffer);
+    } catch (error) {
+      console.error("Session export error:", error);
+      res.status(500).json({ error: "Failed to generate session report" });
     }
   });
 

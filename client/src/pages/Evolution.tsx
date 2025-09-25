@@ -9,6 +9,7 @@ import { HeatmapReactivity } from "@/components/HeatmapReactivity";
 import { useMlPredictions, useGenerateMlPrediction } from "@/hooks/useMlPredictions";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import { ExportButton } from "@/components/ExportButton";
 import { ArrowUp, ArrowDown, CheckCircle, Loader2 } from "lucide-react";
 
 interface EvolutionProps {
@@ -119,20 +120,28 @@ export function Evolution({ patient }: EvolutionProps) {
           </div>
         </div>
         
-        {/* ML Toggle */}
-        <div className="flex items-center space-x-2" data-testid="ml-toggle-container">
-          <Switch
-            checked={mlMode}
-            onCheckedChange={setMLMode}
-            data-testid="ml-toggle"
+        {/* ML Toggle and Export */}
+        <div className="flex items-center space-x-4">
+          <div className="flex items-center space-x-2" data-testid="ml-toggle-container">
+            <Switch
+              checked={mlMode}
+              onCheckedChange={setMLMode}
+              data-testid="ml-toggle"
+            />
+            <label className="text-sm font-medium">Use ML model (TUH-trained)</label>
+            {mlMode && generateMlPrediction.isPending && (
+              <div className="flex items-center space-x-1 text-xs text-muted-foreground">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                <span>Generating predictions...</span>
+              </div>
+            )}
+          </div>
+          
+          <ExportButton 
+            patient={patient} 
+            includeML={mlMode}
+            data-testid="evolution-export-button"
           />
-          <label className="text-sm font-medium">Use ML model (TUH-trained)</label>
-          {mlMode && generateMlPrediction.isPending && (
-            <div className="flex items-center space-x-1 text-xs text-muted-foreground">
-              <Loader2 className="h-3 w-3 animate-spin" />
-              <span>Generating predictions...</span>
-            </div>
-          )}
         </div>
       </div>
       
