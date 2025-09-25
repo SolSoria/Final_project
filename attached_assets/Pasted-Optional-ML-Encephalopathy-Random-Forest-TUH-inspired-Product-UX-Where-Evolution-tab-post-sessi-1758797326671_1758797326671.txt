@@ -1,0 +1,265 @@
+Optional ML Encephalopathy (Random Forest, TUH-inspired)
+Product/UX
+Where: Evolution tab (post-session) only.
+Toggle: “Use ML model (TUH-trained)” (default off).
+Display: TrendChart overlays Rule-based (solid) and ML (dashed). Tooltip shows value, Δ, and uncertainty (tree variance).
+Guard-rails: If session artifact% exceeds cohort thresholds, show “Interpretation limited by artifacts.” for both curves.
+Provenance text (tooltip footer): “Model: Random Forest (sklearn). Features: delta%, ADR, SEF95, continuity %, reactivity, ACNS rate, seizure burden, asymmetry, quality.”
+Environment
+Add to .env:
+PYTHON_BIN=python
+ML_MODEL_PATH=ml/models/encephalopathy_rf.joblib
+Backend: route to score ML over sessions
+Append to src/api/routes.ts:
+import { spawn } from "child_process";
+import path from "path";
+
+router.get("/api/ml/encephalopathy/:patientId", async (req, res) => {
+  await connectDB();
+  const sessions = await Session.find({ patientId: req.params.patientId })
+    .sort({ date: 1 }).lean();
+
+  // Minimal feature view for the Python scorer (keep names stable)
+  const payload = sessions.map(s => ({
+    date: s.date,
+    deltaPct: s.deltaPct ?? null,
+    adr: s.adr ?? null,
+    sef95: s.sef95 ?? null,
+    contContinuous: s.contContinuous ?? null,
+    contDiscontinuous: s.contDiscontinuous ?? null,
+    contBurst: s.contBurst ?? null,
+    contSuppressed: s.contSuppressed ?? null,
+    reactivityScore: scoreReactivity(s.reactivityLight, s.reactivitySound, s.reactivityTactile), // small helper below
+    acnsRatePerHour: s.acnsRatePerHour ?? 0,
+    seizureBurdenMinPerHour: s.seizureBurdenMinPerHour ?? 0,
+    asymmetryIdx: s.asymmetryIdx ?? 0,
+    artifactPct: s.artifactPct ?? 0
+  }));
+
+  const py = spawn(process.env.PYTHON_BIN || "python", [
+    path.join(process.cwd(), "ml", "predict_rf.py"),
+    process.env.ML_MODEL_PATH || "ml/models/encephalopathy_rf.joblib"
+  ], { stdio: ["pipe", "pipe", "pipe"] });
+
+  let out = ""; let err = "";
+  py.stdout.on("data", d => out += d.toString());
+  py.stderr.on("data", d => err += d.toString());
+  py.on("close", code => {
+    if (code !== 0) return res.status(500).json({ error: "ML scorer failed", details: err });
+    try { return res.json(JSON.parse(out)); }
+    catch(e){ return res.status(500).json({ error: "Invalid ML JSON", details: out }); }
+  });
+
+  py.stdin.write(JSON.stringify({ sessions: payload }, null, 2));
+  py.stdin.end();
+
+  function scoreReactivity(l?: string, s?: string, t?: string) {
+    const v = (x?: string) => x === "present" ? 2 : x === "uncertain" ? 1 : 0;
+    const arr = [v(l), v(s), v(t)];
+    const n = arr.filter(x => x !== undefined).length || 1;
+    return arr.reduce((a,b)=>a+b,0) / n; // 0..2
+  }
+});
+Frontend: toggle & overlay
+Add a switch in Evolution header: Use ML model (TUH-trained).
+When enabled, call /api/ml/encephalopathy/:patientId, then render a second series on the “Encephalopathy Score” TrendChart:
+Rule-based: solid line (existing session.encephalopathyScore).
+ML: dashed line from API (mlScore); uncertainty as vertical whiskers or shaded band (optional).
+Tooltip example:
+2025-06-16
+Rule-based: 3.0 (Δ −0.8)
+ML (RF):   3.2 ±0.4 (Δ −1.1)
+Experimental — TUH-trained
+Python: training script (Random Forest)
+This script trains on a TUH-style CSV (or any dataset with the listed columns), saves the model, and prints basic validation. All in English.
+File: ml/train_rf.py
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+Train a Random Forest regressor for ML-based encephalopathy scoring.
+Input: TUH-like CSV with session-level features.
+All column names are in English; see expected schema below.
+
+Expected CSV columns (min):
+- target_encephalopathy: numeric target label (0–10) per session (ground truth or expert label)
+- deltaPct, adr, sef95
+- contContinuous, contDiscontinuous, contBurst, contSuppressed  (each as % of session, sum ≈ 100)
+- reactivityScore (0 absent, 1 uncertain, 2 present OR 0..2 averaged as defined server-side)
+- acnsRatePerHour
+- seizureBurdenMinPerHour
+- asymmetryIdx
+- artifactPct
+- (optional) cohort flags: is_geriatric, is_icu, etc.
+
+Usage:
+  python ml/train_rf.py --csv data/tuh_like_sessions.csv --out ml/models/encephalopathy_rf.joblib
+"""
+
+import argparse, json, joblib
+import numpy as np
+import pandas as pd
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.impute import SimpleImputer
+from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_absolute_error, r2_score
+
+FEATURES = [
+    "deltaPct", "adr", "sef95",
+    "contContinuous", "contDiscontinuous", "contBurst", "contSuppressed",
+    "reactivityScore",
+    "acnsRatePerHour", "seizureBurdenMinPerHour",
+    "asymmetryIdx",
+    "artifactPct"
+]
+OPTIONAL = ["is_geriatric", "is_icu", "is_peds"]  # optional cohort flags if available
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--csv", required=True)
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--n_estimators", type=int, default=400)
+    ap.add_argument("--max_depth", type=int, default=None)
+    args = ap.parse_args()
+
+    df = pd.read_csv(args.csv)
+    y = df["target_encephalopathy"].astype(float)
+
+    # include optional cohort flags if present
+    feat_cols = FEATURES + [c for c in OPTIONAL if c in df.columns]
+    X = df[feat_cols].copy()
+
+    num_pipe = Pipeline(steps=[
+        ("imputer", SimpleImputer(strategy="median"))
+    ])
+    pre = ColumnTransformer(transformers=[("num", num_pipe, feat_cols)], remainder="drop")
+
+    rf = RandomForestRegressor(
+        n_estimators=args.n_estimators,
+        max_depth=args.max_depth,
+        random_state=42,
+        n_jobs=-1
+    )
+
+    pipe = Pipeline(steps=[("pre", pre), ("rf", rf)])
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25, random_state=42)
+    pipe.fit(X_train, y_train)
+
+    # Eval
+    preds = pipe.predict(X_test)
+    mae = mean_absolute_error(y_test, preds)
+    r2 = r2_score(y_test, preds)
+    print(json.dumps({"MAE": mae, "R2": r2}, indent=2))
+
+    # Save
+    out_path = args.out
+    joblib.dump(pipe, out_path)
+    print(json.dumps({"saved": out_path}))
+    
+if __name__ == "__main__":
+    main()
+Python: batch inference script (used by Node route)
+File: ml/predict_rf.py
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+Reads sessions JSON on stdin:
+{ "sessions": [ { featureName: value, ... }, ... ] }
+
+Outputs:
+{ "predictions": [ { "date": "...", "mlScore": float, "uncertainty": float }, ... ] }
+uncertainty is an ensemble variance proxy (std across trees) if available, else 0.0.
+"""
+
+import sys, json, joblib
+import numpy as np
+
+def predict_with_uncertainty(model, X):
+    # If underlying step is RandomForestRegressor, we can estimate variance across trees
+    try:
+        rf = model.named_steps["rf"]
+        # pass through preprocessor
+        Xt = model.named_steps["pre"].transform(X)
+        tree_preds = np.stack([est.predict(Xt) for est in rf.estimators_], axis=1)  # [n_samples, n_trees]
+        mean = tree_preds.mean(axis=1)
+        std = tree_preds.std(axis=1)
+        return mean, std
+    except Exception:
+        # fallback: pipeline .predict only, zero uncertainty
+        p = model.predict(X)
+        return p, np.zeros_like(p)
+
+def main():
+    if len(sys.argv) < 2:
+        print('Usage: predict_rf.py <model_path>', file=sys.stderr)
+        sys.exit(2)
+    model_path = sys.argv[1]
+    model = joblib.load(model_path)
+
+    raw = sys.stdin.read()
+    data = json.loads(raw)
+    sessions = data.get("sessions", [])
+
+    # preserve date for plotting
+    dates = [s.get("date") for s in sessions]
+
+    import pandas as pd
+    # ensure missing columns are filled with NaN; order must match training
+    all_cols = [
+        "deltaPct","adr","sef95",
+        "contContinuous","contDiscontinuous","contBurst","contSuppressed",
+        "reactivityScore",
+        "acnsRatePerHour","seizureBurdenMinPerHour",
+        "asymmetryIdx","artifactPct",
+        "is_geriatric","is_icu","is_peds"
+    ]
+    # Build DataFrame and add missing optional columns as NaN
+    df = pd.DataFrame(sessions)
+    for c in all_cols:
+        if c not in df.columns:
+            df[c] = np.nan
+    df = df[all_cols]
+
+    mean, std = predict_with_uncertainty(model, df)
+
+    out = {
+        "predictions": [
+            { "date": str(dates[i]), "mlScore": float(mean[i]), "uncertainty": float(std[i]) }
+            for i in range(len(dates))
+        ]
+    }
+    print(json.dumps(out))
+
+if __name__ == "__main__":
+    main()
+Data note (TUH)
+You will need to export a TUH-style session table (or your synthetic Mongo sessions) into a CSV with the feature names shown in train_rf.py.
+The ML score is only an auxiliary track; the default rule-based encephalopathy (your current calculation) remains authoritative.
+Frontend integration (Evolution tab)
+Add a toggle: [ ] Use ML model (TUH-trained).
+When toggled on:
+Fetch sessions (as today) for the rule-based line.
+Fetch /api/ml/encephalopathy/:patientId for the ML overlay.
+Render both lines; ML dashed; optional shaded ± uncertainty band.
+Respect quality guard (gray out header notice if artifacts high).
+Runbook for ML
+# 1) Prepare CSV with TUH-like columns and target_encephalopathy
+#    e.g., data/tuh_like_sessions.csv
+
+# 2) Train and save the model
+$ python ml/train_rf.py --csv data/tuh_like_sessions.csv --out ml/models/encephalopathy_rf.joblib
+
+# 3) Start API & frontend as usual
+$ npm run api
+$ npm run dev
+
+# 4) In Evolution, enable "Use ML model (TUH-trained)"
+#    The dashed ML line should appear alongside the rule-based series.
+Acceptance criteria (for this feature)
+Evolution tab shows rule-based encephalopathy trend exactly as before.
+When toggle is ON, ML line appears (dashed) with tooltips including value, delta, uncertainty, model note.
+If Python scorer fails or model missing, UI shows a non-blocking banner: “ML scoring unavailable”.
+No changes to Current Status tab.
+All strings in English; no spectrograms or raw signals introduced.

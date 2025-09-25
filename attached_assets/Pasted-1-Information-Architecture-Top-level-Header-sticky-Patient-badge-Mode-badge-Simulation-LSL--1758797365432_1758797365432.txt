@@ -1,0 +1,252 @@
+1) Information Architecture
+Top-level
+Header (sticky): Patient badge · Mode badge (Simulation/LSL) · Cohort chips · Signal Quality summary.
+Tabs:
+Current Status (real-time, LSL or Simulation replay)
+Evolution (post-session trends; same data across modes)
+Patient Profile Drawer (right): Demographics, Conditions, Medications, Alerts, Notes.
+Current Status (real-time)
+Quality Banner
+Metrics Grid (cards)
+Recent Changes (last 5–10 min)
+Event Timeline (text-only)
+Evolution (post-session)
+Controls Row: session range · metric pills · “Use ML model (TUH-trained)” toggle
+Trend Area (chart changes by metric)
+Context Markers (clinical events)
+Summary Cards (auto text)
+Export to PDF/EMR
+2) Visual Language
+Typography
+Headings: Inter/IBM Plex Sans, 600
+Body: 14–16 px; Line-height 1.45–1.6
+Numbers: Tabular lining for metric values
+Color tokens (Tailwind)
+Success: emerald-500/600
+Warning: amber-500/600
+Danger: rose-500/600
+Neutral: slate-500/700
+Background card: white (light) / slate-900/60 (dark)
+Borders: slate-200 (light) / slate-800 (dark)
+Components style
+Cards: rounded-xl p-4 shadow-sm border
+Chips: rounded-full px-2.5 py-1 text-xs
+Badges (ACNS/L-R): subtle fill + border
+Motion: subtle fades/transforms ≤ 150–200 ms; respect prefers-reduced-motion
+Iconography
+Mode: circle (⚪️) Simulation; dot (🟢/🟥) LSL connected/disconnected
+Quality: gauge icon; triangle for warnings
+3) Components (props & behavior)
+3.1 ModeBadge
+Props: { mode: 'simulation'|'live', connected?: boolean }
+Copy:
+Simulation → Simulation (TUH-like) ⚪️
+Live → LSL: Connected 🟢 / LSL: Disconnected 🟥
+3.2 PatientBadge
+Props: { name, id, age, sex, cohort, setting }
+Shows age/sex, chips: ADULT | GERIATRIC | PEDS, ICU | WARD | AMBULATORY
+3.3 ProfileDrawer
+Tabs: Data · Conditions · Medications · Alerts · Notes
+Rules: Changing cohort/setting updates thresholds/bands globally
+3.4 ConfidenceBar
+Props: { artifactPct, minutesValid }
+Rules:
+Artifact: OK <10% · Warn 10–30% · Poor >30%
+If Poor → raise Quality Gate (see states)
+3.5 ReferenceBand
+Props: { metric: 'deltaPct'|'adr'|'sef95'|'encephalopathy'|..., cohort }
+Renders a mini bullet chart with labeled zones: Normal · Borderline · Abnormal · Critical (if applicable)
+3.6 MetricCard
+Props:
+{
+  title: string;
+  value: number | string;
+  unit?: string;
+  severity: 'normal'|'borderline'|'abnormal'|'critical';
+  refBand: ReferenceBandProps;
+  coverage?: string;         // e.g., "18/20 min valid"
+  note?: string;             // short clinical interpretation
+  contextChips?: string[];   // "Sedation", "Hepatic", "Post-ictal"
+  disabled?: boolean;        // when quality gate triggers
+}
+Behavior: Tooltip shows definition & cohort thresholds.
+3.7 EventTimeline
+Props: { events: Array<{ts, kind, note?, severity?}> }
+Filter chips: “Seizure”, “Pattern”, “Medication”, “Sedation”, “Note”
+3.8 TrendChart (Recharts)
+Props:
+{
+  series: Array<{ name: string; data: Array<{ date: string; value: number; ciLow?: number; ciHigh?: number }> }>;
+  bands?: Array<{ label: string; min?: number; max?: number }>; // cohort bands shaded
+  markers?: Array<{ date: string; label: string }>; // clinical events
+  compare?: boolean; // show dual series (Rule vs ML)
+}
+Default: line with points; ML overlay uses dashed stroke; uncertainty optional shaded band
+3.9 StackedContinuity
+Props: { sessions: Array<{ date, continuous, discontinuous, burst, suppressed }> }
+100% stacked bars with labels on hover
+3.10 HeatmapReactivity
+Props: { matrix: Array<{ sessionDate, light, sound, tactile }> }
+3-state cells: Present / Uncertain / Absent (with icon + color)
+3.11 Sparklines
+Props: { series: Array<{ name, points: Array<{date,value}> }>, bands: ... }
+For ADR & SEF95 paired display
+3.12 MLToggle
+Props: { enabled: boolean, onChange: (v:boolean)=>void }
+Label: Use ML model (TUH-trained)
+4) Current Status (real-time) — UX specifics
+Header row (sticky)
+PatientBadge · ModeBadge · Cohort chips · ConfidenceBar
+Quality Banner
+If artifactPct > warnMax (e.g., 30%):
+Show banner: “Interpretation limited by artifacts.”
+Dim interpretive cards (but keep Quality card active)
+Metrics Grid (2–3 columns)
+Always show cards:
+Reactivity (Present/Uncertain/Absent)
+PDR (Hz) (Present & appropriate / Slow / Absent)
+Continuity (Continuous/Discontinuous/Burst-suppression/Suppressed)
+Asymmetry (index 0–1 + L/R badge)
+Delta %, ADR, SEF95 (each its own card)
+Epileptiform/ACNS (pattern + side + rate/h)
+Seizure burden (min/h) + count
+Quality/Artifact % (never dimmed)
+Each card shows: value, severity bin, ReferenceBand, coverage (e.g., “18/20 min valid”), short note (≤100 chars), context chips (Sedation, Hepatic…)
+Recent Changes panel (last 5–10 min)
+Chips like: ↑ Delta +6%, ADR −0.2, New LPDs (L), Reactivity: Present → Uncertain
+Event Timeline
+Text-only list (no raw trace). Clicking an item highlights timestamp in the Recent Changes panel (visual correlation only).
+Update cadence
+Poll /api/realtime/:id every RT_POLL_INTERVAL_MS (default 2 s)
+Use debounce/hysteresis for severity transitions (confirm with 2 consecutive windows)
+5) Evolution (post-session) — UX specifics
+Controls bar
+Session range (chips: last 3/5/10 / date picker)
+Metric pills: Encephalopathy · Delta% · ADR · SEF95 · Continuity · Reactivity · Seizure Burden · ACNS · Asymmetry · Quality
+MLToggle: Use ML model (TUH-trained) (default OFF)
+When ON, fetch /api/ml/encephalopathy/:patientId and overlay dashed line
+Charts by metric
+Encephalopathy (0–10): TrendChart with cohort bands (Normal ≤2, Mild 3–5, Severe ≥6); second dashed series for ML when enabled; optional uncertainty band
+Delta%: line + age/cohort band
+ADR & SEF95: paired Sparklines
+Continuity: Stacked 100% bars
+Reactivity: Heatmap (stimulus × session)
+Seizure burden: bars (min/h) + cut lines at 5 and 10
+ACNS: line of rate/h + chips with pattern/side per point
+Asymmetry: line with L/R badges
+Quality: bars of % artifact + recurrent channels list
+Context Markers
+Vertical markers: sedation-start, sedation-stop, anticonvulsant-change, infection, procedure
+Summary Cards under chart
+Show current value, Δ vs previous, slope (Improving/Worsening/Stable), and a one-line clinical note
+Example: Encephalopathy ↓ 2.1 vs prior; within geriatric band.
+Export
+Button: Export PDF/EMR
+Sections: Patient Profile · Current snapshot · Trends · Timeline (text) · Mode & Data Provenance (if ML used)
+6) Copy & Microcopy (English)
+Banners
+Quality: Interpretation limited by artifacts.
+Sedation: Sedation may reduce SEF95/Continuity.
+Tooltips (examples)
+ADR: Alpha/Delta Ratio. Adults: normal ≥1.0; geriatrics ≥0.8. Lower values suggest diffuse slowing.
+SEF95: Frequency below which 95% of spectral power lies. Lower values indicate global slowing.
+Asymmetry: 0–1 index; sustained >0.20 may indicate focal dysfunction.
+Reactivity: Response to standardized stimuli. Loss of reactivity implies depressed consciousness.
+Mode
+Simulation badge: Simulation (TUH-like)
+Live badge: LSL: Connected / LSL: Disconnected
+ML (when enabled)
+Tooltip footer: Experimental — TUH-trained Random Forest.
+7) States
+Loading
+Skeleton cards for the grid; spinner over charts
+Copy: Loading data…
+Empty
+Current Status: No real-time data. (show Mode badge)
+Evolution: No previous sessions.
+Error
+Current Status: Real-time feed unavailable.
+Evolution: Could not load session history.
+ML: ML scoring unavailable (non-blocking banner; hide dashed series)
+Quality Gate
+If artifactPct > 30% or minutes valid low → dim interpretive cards, show banner; never dim Quality card
+Responsive
+≥1280px: 3 columns grid
+1024–1279px: 2 columns
+≤1023px: 1 column; drawer becomes full-screen overlay
+Accessibility
+Do not rely on color alone; include labels/icons
+Focus styles and keyboard navigation for drawer, toggle, pills
+ARIA labels for charts and bands
+8) Thresholds Mapping (examples)
+Delta% (Adult): Normal ≤15, Borderline 16–30, Abnormal 31–50, Critical >50
+ADR (Adult): Normal ≥1.0, Borderline 0.5–0.99, Abnormal 0.3–0.49, Critical <0.3
+SEF95 (Adult): Normal ≥12, Borderline 8–11.9, Abnormal 6–7.9, Critical <6
+Asymmetry: Normal ≤0.10, Borderline 0.11–0.20, Abnormal 0.21–0.35, Critical >0.35
+Encephalopathy: Normal 0–2, Mild 3–5, Severe ≥6
+(Geriatric bands adjust per config.)
+9) User Flows
+Switch to Live
+User toggles device → system env MODE=live (or app detects LSL Gateway).
+Header shows LSL: Connected 🟢 once /api/realtime/:id responds.
+Current Status updates every 2 s; Evolution unchanged.
+Enable ML in Evolution
+User toggles Use ML model (TUH-trained).
+App fetches /api/ml/encephalopathy/:patientId.
+Dashed ML line appears; if fails → non-blocking banner, rule-based line remains.
+Interpret a deteriorating patient
+Recent Changes show ↑ Delta +8%, SEF95 −1.5 Hz, Continuity → Discontinuous.
+Evolution shows rising Encephalopathy and Delta% after sedation-stop marker.
+Summary card suggests worsening; clinician correlates with context.
+10) QA Checklist
+ Header shows ModeBadge correctly (simulation vs LSL connected/disconnected).
+ Quality Gate dims interpretive cards at artifact >30% and displays banner.
+ Metric cards show value, severity, ReferenceBand, coverage, note.
+ Evolution charts display cohort bands and event markers.
+ ML toggle overlays dashed line; failure is non-blocking.
+ Chart tooltips include value + delta; ML includes uncertainty.
+ Accessible: icons + text, keyboard navigation, focus rings.
+ No spectrograms or raw traces anywhere.
+11) Minimal Props & Types (for dev)
+// Cohort-aware thresholds loaded from /config/thresholds.*.json
+type Severity = 'normal'|'borderline'|'abnormal'|'critical';
+
+interface RealtimeSnapshot {
+  ts: string;
+  quality: { artifactPct: number; minutesValid: number; badChannels?: string[] };
+  reactivity: { light?: 'present'|'uncertain'|'absent'; sound?: string; tactile?: string };
+  pdrHz?: number;
+  continuity: 'continuous'|'discontinuous'|'burst_suppression'|'suppressed';
+  asymmetry: { idx: number; side?: 'L'|'R' };
+  deltaPct: number;
+  adr: number;
+  sef95: number;
+  acns?: { pattern?: 'LPD'|'GPD'|'LRDA'|'GRDA'; side?: 'L'|'R'; ratePerHour?: number };
+  seizure?: { burdenMinPerHour: number; events: number };
+  context?: { sedation?: boolean; hepatic?: boolean; postIctal?: boolean };
+}
+
+interface SessionSummary {
+  date: string;
+  encephalopathyScore: number;
+  deltaPct: number;
+  adr: number;
+  sef95: number;
+  contContinuous: number;
+  contDiscontinuous: number;
+  contBurst: number;
+  contSuppressed: number;
+  reactivityLight: string;
+  reactivitySound: string;
+  reactivityTactile: string;
+  seizureBurdenMinPerHour: number;
+  seizureEvents: number;
+  acnsRatePerHour?: number;
+  acnsPattern?: string;
+  acnsSide?: 'L'|'R';
+  asymmetryIdx: number;
+  asymmetrySide?: 'L'|'R';
+  artifactPct: number;
+  minutesValid: number;
+  clinicalEvents: Array<{ ts: string; kind: string; note?: string }>;
+}

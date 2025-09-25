@@ -1,0 +1,479 @@
+Project: NeuroScopeQ — EEG Clinical Panel (2 Tabs: Current Status & Evolution)
+Product/UX goals
+Make EEG legible at the bedside (Current Status) and comparable across sessions (Evolution).
+No spectrograms, no raw traces. Use severity bands, quality gates, and short clinical notes.
+Two modes:
+Simulation mode (replays synthetic, TUH-like cases from Mongo).
+Live/LSL mode (reads real-time snapshots from an LSL Gateway service).
+Evolution tab must be identical across modes (always reads from Mongo sessions).
+All UI strings, labels, database content, and comments in English.
+Tech stack
+Frontend: React + TypeScript + Vite, TailwindCSS, Recharts
+State: Zustand (UI state) + React Query (server data)
+Backend: Node + Express, Mongoose (MongoDB)
+DB: MongoDB (two databases: neuroscopeq_sim and neuroscopeq_live)
+Seeding: script that creates 5 realistic cases with sessions & RT snapshots
+Testing: Vitest + React Testing Library
+Tooling: ESLint + Prettier
+.env (environment)
+Create .env with:
+MODE=simulation            # simulation | live
+MONGODB_URI_SIM=mongodb://127.0.0.1:27017/neuroscopeq_sim
+MONGODB_URI_LIVE=mongodb://127.0.0.1:27017/neuroscopeq_live
+LSL_GATEWAY_URL=http://localhost:7070/rt
+RT_POLL_INTERVAL_MS=2000
+PORT=5173
+In Replit, put these in Secrets. If using Atlas, replace URIs accordingly.
+Directory structure
+/src
+  /app
+    main.tsx
+    routes.tsx
+    queryClient.ts
+  /pages
+    CurrentStatus.tsx       // Real-time tab
+    Evolution.tsx           // Post-session trends tab
+    Layout.tsx
+  /components
+    PatientBadge.tsx
+    ProfileDrawer.tsx
+    ConditionChips.tsx
+    ContextBanner.tsx
+    MetricCard.tsx          // standard severity card
+    ReferenceBand.tsx       // mini bullet/band
+    ConfidenceBar.tsx       // artifact% + minutes valid
+    TrendChart.tsx          // lines + cohort bands
+    StackedContinuity.tsx   // 100% stacked bars
+    HeatmapReactivity.tsx   // stimulus x session
+    Sparklines.tsx          // ADR & SEF95
+    EventTimeline.tsx       // textual timeline
+    ModeBadge.tsx           // Simulation vs LSL connected
+  /config
+    thresholds.adult.json
+    thresholds.geriatric.json
+    thresholds.peds.json
+    copy.en.json            // all UI strings in English
+  /state
+    useUIStore.ts
+  /api
+    server.ts               // Express app
+    db.ts                   // connect according to MODE
+    models.ts               // Mongoose schemas
+    routes.ts               // REST endpoints
+  /utils
+    cohorts.ts              // severity helpers
+    formatting.ts
+  /styles
+    tailwind.css
+/scripts
+  seed.ts                   // creates 5 TUH-like cases
+/tests
+  currentStatus.spec.tsx
+  evolution.spec.tsx
+index.html
+tailwind.config.js
+vite.config.ts
+Severity bands & clinical interpretation (central config)
+Config JSONs (example values—tune as needed):
+/src/config/thresholds.adult.json
+{
+  "encephalopathy": { "normalMax": 2, "mildMax": 5, "severeMin": 6 },
+  "deltaPct": { "normalMax": 15, "borderlineMax": 30 },
+  "adr": { "normalMin": 1.0, "borderlineMin": 0.5 },
+  "sef95": { "normalMin": 12, "borderlineMin": 8 },
+  "asymmetryIdxAlert": 0.2,
+  "artifact": { "okMax": 10, "warnMax": 30 }
+}
+/src/config/thresholds.geriatric.json
+{
+  "encephalopathy": { "normalMax": 2, "mildMax": 5, "severeMin": 6 },
+  "deltaPct": { "normalMax": 20, "borderlineMax": 35 },
+  "adr": { "normalMin": 0.8, "borderlineMin": 0.6 },
+  "sef95": { "normalMin": 11, "borderlineMin": 7.5 },
+  "asymmetryIdxAlert": 0.2,
+  "artifact": { "okMax": 10, "warnMax": 30 }
+}
+/src/config/thresholds.peds.json — leave placeholders to fill if needed.
+UI copy: /src/config/copy.en.json
+{
+  "tabs": { "current": "Current Status", "evolution": "Evolution" },
+  "labels": {
+    "quality": "Signal Quality",
+    "artifact": "Artifact",
+    "minutesValid": "Minutes valid",
+    "modeSimulation": "Simulation (TUH-like)",
+    "modeLiveConnected": "LSL: Connected",
+    "modeLiveDisconnected": "LSL: Disconnected"
+  },
+  "guards": {
+    "artifactHigh": "Interpretation limited by artifacts.",
+    "sedation": "Sedation may reduce SEF95/Continuity."
+  },
+  "metrics": {
+    "reactivity": "Reactivity",
+    "pdr": "Posterior Dominant Rhythm (PDR)",
+    "continuity": "Background Continuity",
+    "asymmetry": "Asymmetry",
+    "deltaPct": "Slow-Wave Burden (Delta %)",
+    "adr": "Alpha/Delta Ratio (ADR)",
+    "sef95": "SEF95 (Hz)",
+    "acns": "Epileptiform / ACNS Pattern",
+    "seizureBurden": "Seizure Burden (min/h)"
+  }
+}
+Mongoose schema (shared by both modes)
+/src/api/models.ts
+import { Schema, model, models } from "mongoose";
+
+export const Cohort = ["PEDS","ADULT","GERIATRIC"] as const;
+export const Setting = ["AMBULATORY","WARD","ICU"] as const;
+export const Reactivity = ["present","uncertain","absent"] as const;
+export const Continuity = ["continuous","discontinuous","burst_suppression","suppressed"] as const;
+export const ACNS = ["LPD","GPD","LRDA","GRDA"] as const;
+export const Side = ["L","R"] as const;
+
+const ConditionSchema = new Schema({ name: String, status: { type: String, enum: ["active","resolving","historical"], default: "active" }, startedAt: Date },{ _id:false });
+const MedicationSchema = new Schema({ drug: String, dose: String, route: String, start: Date, end: Date },{ _id:false });
+const ClinicalEventSchema = new Schema({ ts: Date, kind: String, note: String },{ _id:false });
+
+const PatientSchema = new Schema({
+  name: String, age: Number, sex: { type: String, enum:["M","F","X"] },
+  cohort: { type: String, enum: Cohort }, setting:{ type: String, enum: Setting },
+  bed: String, conditions:[ConditionSchema], medications:[MedicationSchema]
+},{ timestamps:true });
+
+const SessionSchema = new Schema({
+  patientId: { type: Schema.Types.ObjectId, ref: "Patient", index: true },
+  date: { type: Date, index: true },
+  encephalopathyScore: Number, deltaPct: Number, adr: Number, sef95: Number,
+  contContinuous: Number, contDiscontinuous: Number, contBurst: Number, contSuppressed: Number,
+  reactivityLight: { type: String, enum: Reactivity }, reactivitySound: { type: String, enum: Reactivity }, reactivityTactile:{ type: String, enum: Reactivity },
+  seizureBurdenMinPerHour: Number, seizureEvents: Number,
+  acnsRatePerHour: Number, acnsPattern: { type: String, enum: ACNS }, acnsSide: { type: String, enum: Side },
+  asymmetryIdx: Number, asymmetrySide: { type: String, enum: Side },
+  artifactPct: Number, minutesValid: Number,
+  clinicalEvents: [ClinicalEventSchema]
+},{ timestamps:true });
+
+const RealtimeSchema = new Schema({
+  patientId: { type: Schema.Types.ObjectId, ref: "Patient", index: true },
+  ts: { type: Date, default: Date.now, index: true },
+  artifactPct: Number, minutesValid: Number,
+  reactivity: { type: String, enum: Reactivity },
+  pdrHz: Number, continuity: { type: String, enum: Continuity },
+  asymmetryIdx: Number, asymmetrySide: { type: String, enum: Side },
+  deltaPct: Number, adr: Number, sef95: Number,
+  acnsPattern: { type: String, enum: ACNS }, acnsSide: { type: String, enum: Side },
+  seizureBurdenMinPerHour: Number, seizureEvents: Number
+},{ timestamps:true });
+
+SessionSchema.index({ patientId:1, date:-1 });
+RealtimeSchema.index({ patientId:1, ts:-1 });
+
+export const Patient = models.Patient || model("Patient", PatientSchema);
+export const Session = models.Session || model("Session", SessionSchema);
+export const RealtimeSample = models.RealtimeSample || model("RealtimeSample", RealtimeSchema);
+DB connection & mode switching
+/src/api/db.ts
+import mongoose from "mongoose";
+
+let conn: typeof mongoose | null = null;
+
+export function getMongoUri(){
+  return process.env.MODE === 'live'
+    ? process.env.MONGODB_URI_LIVE!
+    : process.env.MONGODB_URI_SIM!;
+}
+
+export async function connectDB() {
+  if (conn) return conn;
+  const uri = getMongoUri();
+  conn = await mongoose.connect(uri);
+  return conn;
+}
+Backend (Express) with mode-aware endpoints
+/src/api/routes.ts
+import express from "express";
+import fetch from "node-fetch";
+import { connectDB } from "./db";
+import { Patient, Session, RealtimeSample } from "./models";
+
+export const router = express.Router();
+
+router.get("/api/patient/:id", async (req, res) => {
+  await connectDB();
+  const p = await Patient.findById(req.params.id).lean();
+  if (!p) return res.status(404).json({ error: "Patient not found" });
+  res.json(p);
+});
+
+router.get("/api/sessions/:id", async (req, res) => {
+  await connectDB();
+  const sessions = await Session.find({ patientId: req.params.id }).sort({ date: 1 }).lean();
+  res.json(sessions);
+});
+
+router.get("/api/realtime/:id", async (req, res) => {
+  await connectDB();
+  if (process.env.MODE === "live") {
+    try {
+      const r = await fetch(`${process.env.LSL_GATEWAY_URL}?patientId=${req.params.id}`, { timeout: 1500 as any });
+      if (r.ok) return res.json(await r.json());
+    } catch (_) { /* fall through */ }
+  }
+  const snap = await RealtimeSample.findOne({ patientId: req.params.id }).sort({ ts: -1 }).lean();
+  res.json(snap || null);
+});
+/src/api/server.ts
+import express from "express";
+import cors from "cors";
+import { router } from "./routes";
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+app.use(router);
+
+const port = parseInt(process.env.PORT || "5173", 10);
+app.listen(port, () => console.log(`API on :${port} (MODE=${process.env.MODE})`));
+Add an npm script "api": "tsx src/api/server.ts" (see package.json below).
+Seed script — 5 TUH-inspired cases (sessions + RT)
+/scripts/seed.ts
+import "dotenv/config";
+import { connectDB } from "../src/api/db";
+import { Patient, Session, RealtimeSample } from "../src/api/models";
+
+const d = (s:string)=> new Date(s);
+const jitter=(m:number,s:number)=> Math.max(0, m + (Math.random()*2-1)*s);
+
+async function rtBurst(patientId:any, n=12, base:any={}){
+  for (let i=0;i<n;i++){
+    await RealtimeSample.create({
+      patientId,
+      ts: new Date(Date.now() - (n-i)*5000),
+      artifactPct: jitter(base.artifactPct ?? 12, 6),
+      minutesValid: 20,
+      reactivity: base.reactivity ?? "present",
+      pdrHz: base.pdrHz ?? jitter(10,0.8),
+      continuity: base.continuity ?? "continuous",
+      asymmetryIdx: jitter(base.asymmetryIdx ?? 0.08, 0.04),
+      asymmetrySide: base.asymmetrySide ?? undefined,
+      deltaPct: jitter(base.deltaPct ?? 12, 5),
+      adr: jitter(base.adr ?? 1.3, 0.3),
+      sef95: jitter(base.sef95 ?? 13.5, 1.0),
+      acnsPattern: base.acnsPattern ?? undefined,
+      acnsSide: base.acnsSide ?? undefined,
+      seizureBurdenMinPerHour: base.seizureBurden ?? 0,
+      seizureEvents: base.seizureEvents ?? 0
+    });
+  }
+}
+
+async function main(){
+  const conn = await connectDB();
+  await Promise.all([
+    Patient.deleteMany({}),
+    Session.deleteMany({}),
+    RealtimeSample.deleteMany({})
+  ]);
+
+  // A — Normal adult ambulatory
+  const A = await Patient.create({
+    name:"Case A — Normal adult (ambulatory)", age:34, sex:"F", cohort:"ADULT", setting:"AMBULATORY",
+    conditions:[{name:"Migraine", status:"historical"}], medications:[]
+  });
+  const A_sessions = [
+    { date:"2025-06-01", ence:1.0, delta:10, adr:1.35, sef:13.4, cont:[98,2,0,0], rL:"present", rS:"present", rT:"present", sz:0, ev:0, acns:null, acnsRate:null, asym:0.06, asymSide:null, art:7, min:20 },
+    { date:"2025-06-15", ence:1.2, delta:9,  adr:1.42, sef:14.2, cont:[99,1,0,0], rL:"present", rS:"present", rT:"present", sz:0, ev:0, acns:null, acnsRate:null, asym:0.05, asymSide:null, art:6, min:20 },
+    { date:"2025-07-01", ence:0.9, delta:8,  adr:1.52, sef:14.8, cont:[100,0,0,0],rL:"present", rS:"present", rT:"present", sz:0, ev:0, acns:null, acnsRate:null, asym:0.07, asymSide:null, art:5, min:20 },
+    { date:"2025-07-20", ence:1.1, delta:11, adr:1.28, sef:12.9, cont:[96,4,0,0], rL:"present", rS:"present", rT:"present", sz:0, ev:0, acns:null, acnsRate:null, asym:0.08, asymSide:null, art:9, min:20 },
+    { date:"2025-08-10", ence:1.0, delta:10, adr:1.4,  sef:13.7, cont:[97,3,0,0], rL:"present", rS:"present", rT:"present", sz:0, ev:0, acns:null, acnsRate:null, asym:0.06, asymSide:null, art:7, min:20 }
+  ];
+  for (const s of A_sessions) {
+    await Session.create({
+      patientId: A._id, date:d(s.date),
+      encephalopathyScore:s.ence, deltaPct:s.delta, adr:s.adr, sef95:s.sef,
+      contContinuous:s.cont[0], contDiscontinuous:s.cont[1], contBurst:s.cont[2], contSuppressed:s.cont[3],
+      reactivityLight:s.rL, reactivitySound:s.rS, reactivityTactile:s.rT,
+      seizureBurdenMinPerHour:s.sz, seizureEvents:s.ev,
+      acnsPattern:s.acns, acnsRatePerHour:s.acnsRate, acnsSide:s.asymSide,
+      asymmetryIdx:s.asym, asymmetrySide:s.asymSide,
+      artifactPct:s.art, minutesValid:s.min, clinicalEvents:[]
+    });
+  }
+  await rtBurst(A._id);
+
+  // B — Diffuse encephalopathy geriatric ICU (improving)
+  const B = await Patient.create({
+    name:"Case B — Diffuse encephalopathy (GERIATRIC, ICU)", age:72, sex:"F", cohort:"GERIATRIC", setting:"ICU",
+    conditions:[{name:"Hepatic encephalopathy", status:"active"}],
+    medications:[{drug:"Propofol", dose:"20–10 mcg/kg/min", route:"IV", start:d("2025-06-01")}]
+  });
+  const B_sessions = [
+    { date:"2025-06-01", ence:6.8, delta:38, adr:0.35, sef:7.4, cont:[40,38,15,7],  rL:"absent",   rS:"absent",   rT:"absent",   sz:9, ev:3, acns:"GRDA", acnsRate:4.2, asym:0.10, asymSide:null, art:18, min:20 },
+    { date:"2025-06-05", ence:6.0, delta:36, adr:0.42, sef:7.8, cont:[55,32,10,3],  rL:"uncertain", rS:"uncertain", rT:"absent",   sz:4, ev:2, acns:"GRDA", acnsRate:3.1, asym:0.09, asymSide:null, art:16, min:20 },
+    { date:"2025-06-10", ence:3.8, delta:33, adr:0.55, sef:8.6, cont:[72,24,3,1],   rL:"present",   rS:"uncertain", rT:"uncertain", sz:1, ev:1, acns:null,  acnsRate:null, asym:0.08, asymSide:null, art:14, min:20 },
+    { date:"2025-06-16", ence:3.0, delta:31, adr:0.62, sef:9.1, cont:[81,17,2,0],   rL:"present",   rS:"present",   rT:"uncertain", sz:0, ev:0, acns:null,  acnsRate:null, asym:0.08, asymSide:null, art:12, min:20 },
+    { date:"2025-06-22", ence:2.4, delta:28, adr:0.74, sef:9.8, cont:[88,11,1,0],   rL:"present",   rS:"present",   rT:"present",   sz:0, ev:0, acns:null,  acnsRate:null, asym:0.07, asymSide:null, art:10, min:20 }
+  ];
+  for (const s of B_sessions) {
+    await Session.create({
+      patientId: B._id, date:d(s.date),
+      encephalopathyScore:s.ence, deltaPct:s.delta, adr:s.adr, sef95:s.sef,
+      contContinuous:s.cont[0], contDiscontinuous:s.cont[1], contBurst:s.cont[2], contSuppressed:s.cont[3],
+      reactivityLight:s.rL, reactivitySound:s.rS, reactivityTactile:s.rT,
+      seizureBurdenMinPerHour:s.sz, seizureEvents:s.ev,
+      acnsPattern:s.acns as any, acnsRatePerHour:s.acnsRate ?? undefined, acnsSide:s.asymSide as any,
+      asymmetryIdx:s.asym, asymmetrySide:s.asymSide as any,
+      artifactPct:s.art, minutesValid:s.min,
+      clinicalEvents:[{ ts:d(s.date), kind: s===B_sessions[0]?"sedation-start": s===B_sessions[1]?"sedation-reduction": s===B_sessions[3]?"sedation-stop":"note" }]
+    });
+  }
+  await rtBurst(B._id, 12, { deltaPct:22, adr:0.9, sef95:10, reactivity:"present" });
+
+  // C — Left temporal LPD focus with seizures (worse then responds)
+  const C = await Patient.create({
+    name:"Case C — Left temporal LPD focus", age:46, sex:"M", cohort:"ADULT", setting:"WARD",
+    conditions:[{name:"Focal epilepsy", status:"active"}],
+    medications:[{drug:"Levetiracetam", dose:"1g/12h", route:"PO", start:d("2025-06-03")}]
+  });
+  const C_sessions = [
+    { date:"2025-06-03", ence:2.2, delta:22, adr:0.9,  sef:11.5, cont:[90,9,1,0],  rL:"present",   rS:"present",   rT:"present",   sz:0,  ev:0, acns:"LPD",  acnsRate:3.0, asym:0.10, asymSide:"L", art:12, min:20 },
+    { date:"2025-06-07", ence:4.8, delta:28, adr:0.7,  sef:9.6,  cont:[75,20,5,0], rL:"uncertain", rS:"uncertain", rT:"present",   sz:6,  ev:2, acns:"LPD",  acnsRate:6.5, asym:0.24, asymSide:"L", art:14, min:20 },
+    { date:"2025-06-10", ence:5.6, delta:35, adr:0.48, sef:8.1,  cont:[60,30,10,0], rL:"absent",   rS:"absent",   rT:"uncertain", sz:12, ev:5, acns:"LPD",  acnsRate:7.8, asym:0.31, asymSide:"L", art:15, min:20 },
+    { date:"2025-06-14", ence:3.9, delta:26, adr:0.8,  sef:10.4, cont:[82,16,2,0], rL:"present",   rS:"present",   rT:"uncertain", sz:3,  ev:1, acns:"LPD",  acnsRate:2.2, asym:0.18, asymSide:"L", art:11, min:20 },
+    { date:"2025-06-19", ence:2.7, delta:18, adr:1.1,  sef:12.2, cont:[93,7,0,0],  rL:"present",   rS:"present",   rT:"present",   sz:0,  ev:0, acns:null,  acnsRate:0.3, asym:0.08, asymSide:"L", art:9,  min:20 }
+  ];
+  for (const s of C_sessions) {
+    await Session.create({
+      patientId: C._id, date:d(s.date),
+      encephalopathyScore:s.ence, deltaPct:s.delta, adr:s.adr, sef95:s.sef,
+      contContinuous:s.cont[0], contDiscontinuous:s.cont[1], contBurst:s.cont[2], contSuppressed:s.cont[3],
+      reactivityLight:s.rL, reactivitySound:s.rS, reactivityTactile:s.rT,
+      seizureBurdenMinPerHour:s.sz, seizureEvents:s.ev,
+      acnsPattern:s.acns as any, acnsRatePerHour:s.acnsRate ?? undefined, acnsSide:s.asymSide as any,
+      asymmetryIdx:s.asym, asymmetrySide:s.asymSide as any,
+      artifactPct:s.art, minutesValid:s.min,
+      clinicalEvents: s===C_sessions[1] ? [{ ts:d(s.date), kind:"anticonvulsant-change"}] : []
+    });
+  }
+  await rtBurst(C._id, 12, { seizureBurden:0, deltaPct:18, adr:1.1, sef95:12 });
+
+  // D — Post-anoxic with burst-suppression (ICU)
+  const D = await Patient.create({
+    name:"Case D — Post-anoxic (burst-suppression)", age:59, sex:"M", cohort:"ADULT", setting:"ICU",
+    conditions:[{name:"Post-anoxic encephalopathy", status:"active"}],
+    medications:[{drug:"Sedation", dose:"variable", route:"IV", start:d("2025-06-01")}]
+  });
+  const D_sessions = [
+    { date:"2025-06-01", ence:8.5, delta:40, adr:0.3, sef:6.2, cont:[10,20,55,15], rL:"absent", rS:"absent", rT:"absent", sz:0, ev:0, acns:"GPD", acnsRate:1.2, asym:0.12, asymSide:null, art:15, min:20 },
+    { date:"2025-06-04", ence:8.0, delta:38, adr:0.35, sef:6.8, cont:[14,18,50,18], rL:"absent", rS:"absent", rT:"absent", sz:0, ev:0, acns:"GPD", acnsRate:1.0, asym:0.11, asymSide:null, art:14, min:20 },
+    { date:"2025-06-08", ence:7.6, delta:36, adr:0.4, sef:7.2, cont:[18,22,45,15], rL:"uncertain", rS:"absent", rT:"absent", sz:0, ev:0, acns:"GRDA", acnsRate:1.0, asym:0.10, asymSide:null, art:12, min:20 },
+    { date:"2025-06-12", ence:7.2, delta:34, adr:0.45, sef:7.6, cont:[25,25,40,10], rL:"uncertain", rS:"uncertain", rT:"absent", sz:0, ev:0, acns:"GRDA", acnsRate:0.8, asym:0.10, asymSide:null, art:12, min:20 },
+    { date:"2025-06-16", ence:7.0, delta:33, adr:0.5, sef:8.0, cont:[30,30,35,5],  rL:"present", rS:"uncertain", rT:"uncertain", sz:0, ev:0, acns:null, acnsRate:null, asym:0.10, asymSide:null, art:10, min:20 }
+  ];
+  for (const s of D_sessions) {
+    await Session.create({ patientId:D._id, date:d(s.date),
+      encephalopathyScore:s.ence, deltaPct:s.delta, adr:s.adr, sef95:s.sef,
+      contContinuous:s.cont[0], contDiscontinuous:s.cont[1], contBurst:s.cont[2], contSuppressed:s.cont[3],
+      reactivityLight:s.rL, reactivitySound:s.rS, reactivityTactile:s.rT,
+      seizureBurdenMinPerHour:s.sz, seizureEvents:s.ev,
+      acnsPattern:s.acns as any, acnsRatePerHour:s.acnsRate ?? undefined, acnsSide:s.asymSide as any,
+      asymmetryIdx:s.asym, asymmetrySide:s.asymSide as any,
+      artifactPct:s.art, minutesValid:s.min, clinicalEvents:[]
+    });
+  }
+  await rtBurst(D._id, 12, { continuity:"burst_suppression", sef95:6.8, adr:0.35, deltaPct:38, reactivity:"absent" });
+
+  // E — Fluctuating hepatic encephalopathy (WARD/ICU)
+  const E = await Patient.create({
+    name:"Case E — Fluctuating hepatic encephalopathy", age:63, sex:"F", cohort:"ADULT", setting:"WARD",
+    conditions:[{name:"Cirrhosis", status:"active"}, {name:"Hepatic encephalopathy", status:"active"}],
+    medications:[{drug:"Lactulose", dose:"30 ml q8h", route:"PO", start:d("2025-06-05")}]
+  });
+  const E_sessions = [
+    { date:"2025-06-05", ence:5.5, delta:32, adr:0.55, sef:8.8, cont:[70,25,4,1], rL:"uncertain", rS:"uncertain", rT:"present", sz:0, ev:0, acns:"GRDA", acnsRate:2.0, asym:0.10, asymSide:null, art:12, min:20 },
+    { date:"2025-06-10", ence:4.0, delta:28, adr:0.7,  sef:9.6, cont:[78,18,3,1], rL:"present",   rS:"uncertain", rT:"present", sz:0, ev:0, acns:"GRDA", acnsRate:1.2, asym:0.10, asymSide:null, art:10, min:20 },
+    { date:"2025-06-14", ence:6.2, delta:40, adr:0.45, sef:8.2, cont:[62,30,6,2], rL:"uncertain", rS:"absent",    rT:"uncertain", sz:0, ev:0, acns:"GRDA", acnsRate:2.5, asym:0.11, asymSide:null, art:16, min:20 },
+    { date:"2025-06-19", ence:4.8, delta:30, adr:0.65, sef:9.1, cont:[75,20,4,1], rL:"present",   rS:"uncertain", rT:"present",   sz:0, ev:0, acns:null,  acnsRate:null, asym:0.10, asymSide:null, art:12, min:20 },
+    { date:"2025-06-24", ence:3.5, delta:26, adr:0.8,  sef:10.2, cont:[82,15,2,1], rL:"present",  rS:"present",   rT:"present",   sz:0, ev:0, acns:null,  acnsRate:null, asym:0.10, asymSide:null, art:9,  min:20 }
+  ];
+  for (const s of E_sessions) {
+    await Session.create({
+      patientId:E._id, date:d(s.date),
+      encephalopathyScore:s.ence, deltaPct:s.delta, adr:s.adr, sef95:s.sef,
+      contContinuous:s.cont[0], contDiscontinuous:s.cont[1], contBurst:s.cont[2], contSuppressed:s.cont[3],
+      reactivityLight:s.rL, reactivitySound:s.rS, reactivityTactile:s.rT,
+      seizureBurdenMinPerHour:s.sz, seizureEvents:s.ev,
+      acnsPattern:s.acns as any, acnsRatePerHour:s.acnsRate ?? undefined, acnsSide:s.asymSide as any,
+      asymmetryIdx:s.asym, asymmetrySide:s.asymSide as any,
+      artifactPct:s.art, minutesValid:s.min, clinicalEvents:[]
+    });
+  }
+  await rtBurst(E._id, 12, { deltaPct:30, adr:0.65, sef95:9.1 });
+
+  console.log("Seed complete: 5 TUH-like cases created.");
+  await conn.disconnect();
+}
+
+main().catch(e=>{ console.error(e); process.exit(1); });
+Scripts in package.json:
+{
+  "scripts": {
+    "dev": "vite",
+    "api": "tsx src/api/server.ts",
+    "seed": "tsx scripts/seed.ts",
+    "test": "vitest"
+  }
+}
+Frontend behavior (key points)
+Layout: Header (Patient badge, Mode badge, Cohort chips, Quality) + Tabs.
+ModeBadge:
+MODE=simulation → “Simulation (TUH-like)” ⚪️
+MODE=live → ping /api/realtime/:id every 10s. Success → “LSL: Connected” 🟢, otherwise 🟥 “Disconnected”
+Current Status tab:
+Pull /api/realtime/:id every RT_POLL_INTERVAL_MS.
+Each MetricCard: Title · Value/Unit · Severity band (3–4 bins) · ReferenceBand (cohort bands) · ConfidenceBar (artifact% + minutes valid) · short clinical note.
+If artifactPct > thresholds.artifact.warnMax → gray out interpretive cards; show “Interpretation limited by artifacts.”
+Evolution tab:
+Pull /api/sessions/:id.
+Charts:
+Encephalopathy (line + cohort bands).
+Delta% (line + age/cohort band).
+ADR & SEF95 (sparklines).
+Continuity (100% stacked bars).
+Reactivity (heatmap by stimulus).
+Seizure burden (bars + cut lines).
+ACNS rate (line) + pattern/side chips.
+Asymmetry (line + L/R badges).
+Quality (bars + recurrent channels).
+Vertical markers for clinical events (sedation start/stop, AED change, etc.).
+Summary cards under each chart with: current value, Δ vs previous, slope (improving/worsening), one-line clinical note.
+Tests (minimum)
+Render MetricCard with proper bin given thresholds (adult vs geriatric).
+When artifactPct > 30%, interpretive cards are dimmed and guard text appears.
+Evolution “Encephalopathy” shows bands and tooltips with Δ/Δ%.
+ModeBadge switches labels/colors with MODE and connectivity.
+Acceptance criteria
+Two tabs: Current Status (real-time) and Evolution (trends).
+No spectrograms/raw traces anywhere.
+Simulation mode uses Mongo neuroscopeq_sim with 5 TUH-like cases; Live mode proxies LSL Gateway for RT only.
+Evolution tab is identical across modes (same API/DB).
+Severity bands & clinical text are cohort-aware and consistent.
+Quality gate dims cards when artifacts are high.
+All UI and data in English.
+Runbook
+# install deps
+npm i
+
+# start API (in one repl shell)
+npm run api
+
+# seed SIM db
+npm run seed
+
+# start frontend
+npm run dev
+Switch modes:
+Simulation: MODE=simulation (default), uses MONGODB_URI_SIM.
+Live: MODE=live + a reachable LSL_GATEWAY_URL; Evolution still uses Mongo, Current Status reads gateway (fallback: last snapshot in DB).
