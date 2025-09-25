@@ -1,0 +1,29 @@
+{
+  "tabs": { 
+    "current": "Current Status", 
+    "evolution": "Evolution" 
+  },
+  "labels": {
+    "quality": "Signal Quality",
+    "artifact": "Artifact",
+    "minutesValid": "Minutes valid",
+    "modeSimulation": "Simulation (TUH-like)",
+    "modeLiveConnected": "LSL: Connected",
+    "modeLiveDisconnected": "LSL: Disconnected"
+  },
+  "guards": {
+    "artifactHigh": "Interpretation limited by artifacts.",
+    "sedation": "Sedation may reduce SEF95/Continuity."
+  },
+  "metrics": {
+    "reactivity": "Reactivity",
+    "pdr": "Posterior Dominant Rhythm (PDR)",
+    "continuity": "Background Continuity",
+    "asymmetry": "Asymmetry",
+    "deltaPct": "Slow-Wave Burden (Delta %)",
+    "adr": "Alpha/Delta Ratio (ADR)",
+    "sef95": "SEF95 (Hz)",
+    "acns": "Epileptiform / ACNS Pattern",
+    "seizureBurden": "Seizure Burden (min/h)"
+  }
+}

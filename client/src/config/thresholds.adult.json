@@ -1,0 +1,8 @@
+{
+  "encephalopathy": { "normalMax": 2, "mildMax": 5, "severeMin": 6 },
+  "deltaPct": { "normalMax": 15, "borderlineMax": 30 },
+  "adr": { "normalMin": 1.0, "borderlineMin": 0.5 },
+  "sef95": { "normalMin": 12, "borderlineMin": 8 },
+  "asymmetryIdxAlert": 0.2,
+  "artifact": { "okMax": 10, "warnMax": 30 }
+}
