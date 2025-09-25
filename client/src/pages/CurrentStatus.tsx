@@ -1,3 +1,4 @@
+import React from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { type Patient, type RealtimeSample } from "@shared/schema";
@@ -31,39 +32,61 @@ export function CurrentStatus({ patient, realtimeSample }: CurrentStatusProps) {
     queryFn: () => api.getRealtimeHistory(patient.id, 10),
   });
 
+  // Get timeline events from database
+  const { data: timelineEvents = [] } = useQuery({
+    queryKey: ['/api/timeline', patient.id],
+    queryFn: () => api.getTimelineEvents(patient.id, 10),
+    refetchInterval: 30000, // Refresh every 30 seconds
+  });
+
   const isHighArtifact = realtimeSample ? realtimeSample.artifactPct > thresholds.artifact.warnMax : false;
 
-  // Mock recent changes - in real app this would compare current vs previous samples
-  const recentChanges = [
-    { type: 'increase', metric: 'Delta', value: '+3%', severity: 'warning' },
-    { type: 'decrease', metric: 'SEF95', value: '-1.2 Hz', severity: 'warning' },
-    { type: 'change', metric: 'Reactivity', value: 'Present → Uncertain', severity: 'info' }
-  ];
-
-  // Mock timeline events
-  const timelineEvents = [
-    {
-      id: '1',
-      type: 'pattern' as const,
-      title: 'LPDs detected (Left)',
-      description: 'New lateralized periodic discharges identified in left temporal region',
-      timestamp: new Date(Date.now() - 2 * 60 * 1000) // 2 minutes ago
-    },
-    {
-      id: '2', 
-      type: 'medication' as const,
-      title: 'Propofol reduced',
-      description: 'Sedation decreased from 50 mg/hr to 25 mg/hr',
-      timestamp: new Date(Date.now() - 8 * 60 * 1000) // 8 minutes ago
-    },
-    {
-      id: '3',
-      type: 'metric' as const, 
-      title: 'Background discontinuity increased',
-      description: 'Continuity dropped to 72% from previous 85%',
-      timestamp: new Date(Date.now() - 12 * 60 * 1000) // 12 minutes ago
+  // Calculate recent changes by comparing current vs previous samples
+  const recentChanges = React.useMemo(() => {
+    if (!realtimeSample || !realtimeHistory || realtimeHistory.length < 2) {
+      return [];
     }
-  ];
+
+    const current = realtimeSample;
+    // realtimeHistory is ordered newest first (desc) from database
+    // Compare current sample with the previous one (second in the array)
+    const previous = realtimeHistory[1]; // Previous sample (second newest)
+    const changes = [];
+
+    // Compare delta percentage
+    const deltaDiff = current.deltaPct - previous.deltaPct;
+    if (Math.abs(deltaDiff) > 2) {
+      changes.push({
+        type: deltaDiff > 0 ? 'increase' : 'decrease',
+        metric: 'Delta',
+        value: `${deltaDiff > 0 ? '+' : ''}${deltaDiff.toFixed(1)}%`,
+        severity: Math.abs(deltaDiff) > 5 ? 'warning' : 'info'
+      });
+    }
+
+    // Compare SEF95
+    const sef95Diff = current.sef95 - previous.sef95;
+    if (Math.abs(sef95Diff) > 1) {
+      changes.push({
+        type: sef95Diff > 0 ? 'increase' : 'decrease',
+        metric: 'SEF95',
+        value: `${sef95Diff > 0 ? '+' : ''}${sef95Diff.toFixed(1)} Hz`,
+        severity: Math.abs(sef95Diff) > 2 ? 'warning' : 'info'
+      });
+    }
+
+    // Compare reactivity
+    if (current.reactivity !== previous.reactivity) {
+      changes.push({
+        type: 'change',
+        metric: 'Reactivity',
+        value: `${previous.reactivity} → ${current.reactivity}`,
+        severity: current.reactivity === 'absent' ? 'error' : 'info'
+      });
+    }
+
+    return changes.slice(0, 3); // Show max 3 changes
+  }, [realtimeSample, realtimeHistory]);
 
   if (!realtimeSample) {
     return (

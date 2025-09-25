@@ -34,5 +34,12 @@ export const api = {
     const response = await fetch(`${BASE_URL}/realtime/${patientId}/history?limit=${limit}`);
     if (!response.ok) throw new Error('Failed to fetch realtime history');
     return response.json();
+  },
+
+  // Timeline events
+  getTimelineEvents: async (patientId: string, limit = 20): Promise<any[]> => {
+    const response = await fetch(`${BASE_URL}/timeline/${patientId}?limit=${limit}`);
+    if (!response.ok) throw new Error('Failed to fetch timeline events');
+    return response.json();
   }
 };

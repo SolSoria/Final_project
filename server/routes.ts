@@ -123,6 +123,74 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Get timeline events for patient  
+  app.get("/api/timeline/:patientId", async (req, res) => {
+    try {
+      const limit = parseInt(req.query.limit as string) || 20;
+      
+      // Get recent sessions with clinical events
+      const sessions = await storage.getSessions(req.params.patientId);
+      const recentSessions = sessions.slice(-5); // Last 5 sessions
+      
+      // Get recent realtime samples
+      const realtimeSamples = await storage.getRealtimeSamples(req.params.patientId, 10);
+      
+      // Extract timeline events from clinical events and recent samples
+      const timelineEvents = [];
+      
+      // Add clinical events from sessions
+      for (const session of recentSessions) {
+        if (session.clinicalEvents && session.clinicalEvents.length > 0) {
+          for (const event of session.clinicalEvents) {
+            timelineEvents.push({
+              id: `session-${session.id}-event-${event.ts}`,
+              type: event.kind,
+              title: event.kind,
+              description: event.note,
+              timestamp: event.ts
+            });
+          }
+        }
+      }
+      
+      // Add sample-based events (e.g., seizure detection, ACNS patterns)
+      for (let i = 0; i < realtimeSamples.length - 1; i++) {
+        const current = realtimeSamples[i];
+        const previous = realtimeSamples[i + 1];
+        
+        // Detect seizure events
+        if (current.seizureEvents > previous.seizureEvents) {
+          timelineEvents.push({
+            id: `seizure-${current.id}`,
+            type: 'seizure',
+            title: 'Seizure activity detected',
+            description: `${current.seizureEvents - previous.seizureEvents} new seizure event(s) detected`,
+            timestamp: current.ts
+          });
+        }
+        
+        // Detect ACNS pattern changes
+        if (current.acnsPattern && current.acnsPattern !== previous.acnsPattern) {
+          timelineEvents.push({
+            id: `acns-${current.id}`,
+            type: 'pattern',
+            title: `${current.acnsPattern} pattern detected`,
+            description: `New ${current.acnsPattern} pattern identified${current.acnsSide ? ` (${current.acnsSide} side)` : ''}`,
+            timestamp: current.ts
+          });
+        }
+      }
+      
+      // Sort by timestamp (most recent first) and limit
+      timelineEvents.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      
+      res.json(timelineEvents.slice(0, limit));
+    } catch (error) {
+      console.error("Timeline error:", error);
+      res.status(500).json({ error: "Failed to fetch timeline events" });
+    }
+  });
+
   // Seed endpoint for development
   app.post("/api/seed", async (req, res) => {
     try {
