@@ -7,6 +7,9 @@ interface UIState {
   mlMode: boolean;
   sessionRange: 'last5' | 'last10' | 'custom';
   selectedMetrics: string[];
+  environment: 'simulation' | 'hardware' | null;
+  isRecording: boolean;
+  recordingStartTime: Date | null;
   
   setActiveTab: (tab: 'current' | 'evolution') => void;
   setProfileDrawerOpen: (open: boolean) => void;
@@ -14,6 +17,9 @@ interface UIState {
   setMLMode: (enabled: boolean) => void;
   setSessionRange: (range: 'last5' | 'last10' | 'custom') => void;
   toggleMetric: (metric: string) => void;
+  setEnvironment: (env: 'simulation' | 'hardware') => void;
+  startRecording: () => void;
+  stopRecording: () => void;
 }
 
 export const useUIStore = create<UIState>((set) => ({
@@ -23,6 +29,9 @@ export const useUIStore = create<UIState>((set) => ({
   mlMode: false,
   sessionRange: 'last5',
   selectedMetrics: ['encephalopathy', 'deltaPct', 'adr', 'sef95'],
+  environment: null,
+  isRecording: false,
+  recordingStartTime: null,
   
   setActiveTab: (tab) => set({ activeTab: tab }),
   setProfileDrawerOpen: (open) => set({ profileDrawerOpen: open }),
@@ -33,5 +42,8 @@ export const useUIStore = create<UIState>((set) => ({
     selectedMetrics: state.selectedMetrics.includes(metric)
       ? state.selectedMetrics.filter(m => m !== metric)
       : [...state.selectedMetrics, metric]
-  }))
+  })),
+  setEnvironment: (env) => set({ environment: env, selectedPatientId: null }),
+  startRecording: () => set({ isRecording: true, recordingStartTime: new Date() }),
+  stopRecording: () => set({ isRecording: false, recordingStartTime: null })
 }));

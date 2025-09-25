@@ -1,13 +1,13 @@
-import { type Patient, type Session, type RealtimeSample, type MlPrediction, type InsertPatient, type InsertSession, type InsertRealtimeSample, type InsertMlPrediction, patients, sessions, realtimeSamples, mlPredictions } from "@shared/schema";
+import { type Patient, type Session, type RealtimeSample, type MlPrediction, type InsertPatient, type InsertSession, type InsertRealtimeSample, type InsertMlPrediction, type CohortType, type SettingType, patients, sessions, realtimeSamples, mlPredictions } from "@shared/schema";
 import { db } from "./db";
-import { eq, desc } from "drizzle-orm";
+import { eq, desc, like, and } from "drizzle-orm";
 import { randomUUID } from "crypto";
 
 export interface IStorage {
   // Patients
   getPatient(id: string): Promise<Patient | undefined>;
   createPatient(patient: InsertPatient): Promise<Patient>;
-  getPatients(): Promise<Patient[]>;
+  getPatients(filters?: { search?: string; cohort?: CohortType; setting?: SettingType }): Promise<Patient[]>;
   
   // Sessions
   getSessions(patientId: string): Promise<Session[]>;
@@ -69,8 +69,39 @@ export class DatabaseStorage implements IStorage {
     return patient;
   }
 
-  async getPatients(): Promise<Patient[]> {
-    return await db.select().from(patients);
+  async getPatients(filters?: { search?: string; cohort?: CohortType; setting?: SettingType }): Promise<Patient[]> {
+    const conditions = [];
+    
+    if (filters?.search) {
+      conditions.push(like(patients.name, `%${filters.search}%`));
+    }
+    
+    if (filters?.cohort) {
+      conditions.push(eq(patients.cohort, filters.cohort));
+    }
+    
+    if (filters?.setting) {
+      conditions.push(eq(patients.setting, filters.setting));
+    }
+    
+    if (conditions.length > 1) {
+      return await db
+        .select()
+        .from(patients)
+        .where(and(...conditions))
+        .orderBy(desc(patients.updatedAt));
+    } else if (conditions.length === 1) {
+      return await db
+        .select()
+        .from(patients)
+        .where(conditions[0])
+        .orderBy(desc(patients.updatedAt));
+    }
+    
+    return await db
+      .select()
+      .from(patients)
+      .orderBy(desc(patients.updatedAt));
   }
 
   async getSessions(patientId: string): Promise<Session[]> {

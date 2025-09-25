@@ -2,10 +2,17 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { WebSocketServer } from "ws";
 import { storage } from "./storage";
-import { insertPatientSchema, insertSessionSchema, insertRealtimeSchema, insertMlPredictionSchema } from "@shared/schema";
+import { insertPatientSchema, insertSessionSchema, insertRealtimeSchema, insertMlPredictionSchema, Cohort, Setting } from "@shared/schema";
 import { randomForestModel } from "./ml/randomForest";
 import { ClinicalReportService } from "./pdf/clinical-report";
 import { z } from "zod";
+
+// Schema for patient search/filter query parameters
+const patientFiltersSchema = z.object({
+  search: z.string().optional(),
+  cohort: z.enum(Cohort).optional(),
+  setting: z.enum(Setting).optional(),
+});
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Get patient by ID
@@ -21,10 +28,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Get all patients
+  // Get all patients with optional search and filtering
   app.get("/api/patients", async (req, res) => {
     try {
-      const patients = await storage.getPatients();
+      // Validate query parameters using schema
+      const parseResult = patientFiltersSchema.safeParse(req.query);
+      
+      if (!parseResult.success) {
+        return res.status(400).json({ 
+          error: "Invalid query parameters", 
+          details: parseResult.error.errors 
+        });
+      }
+      
+      const filters = parseResult.data;
+      
+      // Only pass non-empty filters to storage
+      const cleanFilters = Object.keys(filters).length > 0 ? filters : undefined;
+      const patients = await storage.getPatients(cleanFilters);
       res.json(patients);
     } catch (error) {
       res.status(500).json({ error: "Failed to fetch patients" });

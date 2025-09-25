@@ -4,8 +4,14 @@ const BASE_URL = '/api';
 
 export const api = {
   // Patients
-  getPatients: async (): Promise<Patient[]> => {
-    const response = await fetch(`${BASE_URL}/patients`);
+  getPatients: async (params?: { search?: string; cohort?: string; setting?: string }): Promise<Patient[]> => {
+    const searchParams = new URLSearchParams();
+    if (params?.search) searchParams.append('search', params.search);
+    if (params?.cohort) searchParams.append('cohort', params.cohort);
+    if (params?.setting) searchParams.append('setting', params.setting);
+    
+    const url = `${BASE_URL}/patients${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
+    const response = await fetch(url);
     if (!response.ok) throw new Error('Failed to fetch patients');
     return response.json();
   },
