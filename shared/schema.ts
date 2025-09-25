@@ -83,22 +83,50 @@ export const realtimeSamples = pgTable("realtime_samples", {
   updatedAt: timestamp("updated_at").defaultNow().notNull()
 });
 
+export const mlPredictions = pgTable("ml_predictions", {
+  id: varchar("id").primaryKey(),
+  sessionId: varchar("session_id").notNull(),
+  patientId: varchar("patient_id").notNull(),
+  modelVersion: text("model_version").notNull().default("RF-TUH-v1.0"),
+  encephalopathyScore: real("encephalopathy_score").notNull(),
+  deltaPct: real("delta_pct").notNull(),
+  adr: real("adr").notNull(),
+  sef95: real("sef95").notNull(),
+  confidence: real("confidence").notNull(),
+  features: jsonb("features").$type<Record<string, number>>().notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull()
+});
+
 // Relations
 export const patientsRelations = relations(patients, ({ many }) => ({
   sessions: many(sessions),
-  realtimeSamples: many(realtimeSamples)
+  realtimeSamples: many(realtimeSamples),
+  mlPredictions: many(mlPredictions)
 }));
 
-export const sessionsRelations = relations(sessions, ({ one }) => ({
+export const sessionsRelations = relations(sessions, ({ one, many }) => ({
   patient: one(patients, {
     fields: [sessions.patientId],
     references: [patients.id]
-  })
+  }),
+  mlPrediction: many(mlPredictions)
 }));
 
 export const realtimeSamplesRelations = relations(realtimeSamples, ({ one }) => ({
   patient: one(patients, {
     fields: [realtimeSamples.patientId],
+    references: [patients.id]
+  })
+}));
+
+export const mlPredictionsRelations = relations(mlPredictions, ({ one }) => ({
+  session: one(sessions, {
+    fields: [mlPredictions.sessionId],
+    references: [sessions.id]
+  }),
+  patient: one(patients, {
+    fields: [mlPredictions.patientId],
     references: [patients.id]
   })
 }));
@@ -128,18 +156,22 @@ const clinicalEventSchema = z.object({
 export const patientSchema = createSelectSchema(patients);
 export const sessionSchema = createSelectSchema(sessions);
 export const realtimeSchema = createSelectSchema(realtimeSamples);
+export const mlPredictionSchema = createSelectSchema(mlPredictions);
 
 export const insertPatientSchema = createInsertSchema(patients);
 export const insertSessionSchema = createInsertSchema(sessions);
 export const insertRealtimeSchema = createInsertSchema(realtimeSamples);
+export const insertMlPredictionSchema = createInsertSchema(mlPredictions);
 
 // Types inferred from tables
 export type Patient = typeof patients.$inferSelect;
 export type Session = typeof sessions.$inferSelect;
 export type RealtimeSample = typeof realtimeSamples.$inferSelect;
+export type MlPrediction = typeof mlPredictions.$inferSelect;
 export type InsertPatient = typeof patients.$inferInsert;
 export type InsertSession = typeof sessions.$inferInsert;
 export type InsertRealtimeSample = typeof realtimeSamples.$inferInsert;
+export type InsertMlPrediction = typeof mlPredictions.$inferInsert;
 export type Condition = z.infer<typeof conditionSchema>;
 export type Medication = z.infer<typeof medicationSchema>;
 export type ClinicalEvent = z.infer<typeof clinicalEventSchema>;
