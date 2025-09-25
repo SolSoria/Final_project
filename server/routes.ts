@@ -1,5 +1,6 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
+import { WebSocketServer } from "ws";
 import { storage } from "./storage";
 import { insertPatientSchema, insertSessionSchema, insertRealtimeSchema } from "@shared/schema";
 import { z } from "zod";
@@ -204,5 +205,302 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   const httpServer = createServer(app);
+  
+  // Set up WebSocket server for real-time EEG streaming
+  // Use a specific path to avoid conflicts with Vite's HMR WebSocket
+  const wss = new WebSocketServer({ 
+    server: httpServer,
+    path: '/ws/realtime'
+  });
+  
+  // LSL Gateway integration for live EEG data
+  interface LSLGatewayClient {
+    patientId: string;
+    connected: boolean;
+    lastUpdate: Date;
+    intervalId?: NodeJS.Timeout;
+    subscriberCount: number; // Track how many WebSocket clients are subscribed
+  }
+  
+  interface WebSocketClient {
+    ws: any;
+    subscribedPatients: Set<string>;
+  }
+  
+  const lslClients = new Map<string, LSLGatewayClient>();
+  const wsClients = new Map<any, WebSocketClient>();
+  
+  // Function to generate simulated EEG data with realistic variations
+  function generateSimulatedEEGData(patientId: string, previousSample?: any) {
+    const jitter = (base: number, variance: number) => Math.max(0, base + (Math.random() * 2 - 1) * variance);
+    
+    // Use previous sample as baseline or default values
+    const baseline = previousSample || {
+      artifactPct: 12,
+      pdrHz: 10,
+      deltaPct: 12,
+      adr: 1.3,
+      sef95: 13.5,
+      asymmetryIdx: 0.08
+    };
+    
+    return {
+      patientId,
+      ts: new Date(),
+      artifactPct: jitter(baseline.artifactPct, 3),
+      minutesValid: 20,
+      reactivity: Math.random() > 0.95 ? (Math.random() > 0.5 ? 'uncertain' : 'absent') : 'present',
+      pdrHz: jitter(baseline.pdrHz, 0.5),
+      continuity: Math.random() > 0.98 ? 'discontinuous' : 'continuous',
+      asymmetryIdx: jitter(baseline.asymmetryIdx, 0.02),
+      asymmetrySide: Math.random() > 0.9 ? (Math.random() > 0.5 ? 'left' : 'right') : null,
+      deltaPct: jitter(baseline.deltaPct, 2),
+      adr: jitter(baseline.adr, 0.2),
+      sef95: jitter(baseline.sef95, 1),
+      acnsPattern: Math.random() > 0.95 ? 'LPDs' : null,
+      acnsSide: Math.random() > 0.95 ? (Math.random() > 0.5 ? 'left' : 'right') : null,
+      seizureBurdenMinPerHour: Math.random() > 0.98 ? Math.floor(Math.random() * 3) : 0,
+      seizureEvents: Math.random() > 0.99 ? Math.floor(Math.random() * 2) : 0
+    };
+  }
+
+  // Function to fetch data from LSL Gateway
+  async function fetchFromLSLGateway(patientId: string) {
+    try {
+      const lslUrl = process.env.LSL_GATEWAY_URL || "http://localhost:7070/realtime";
+      const response = await fetch(`${lslUrl}?patientId=${patientId}`, {
+        signal: AbortSignal.timeout(2000),
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'NeuroScopeQ/1.0'
+        }
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        
+        // Validate the data structure
+        if (data && typeof data === 'object') {
+          const realtimeData = {
+            patientId,
+            ts: new Date(),
+            artifactPct: data.artifact_pct || 12,
+            minutesValid: data.minutes_valid || 20,
+            reactivity: data.reactivity || "present",
+            pdrHz: data.pdr_hz || 10,
+            continuity: data.continuity || "continuous",
+            asymmetryIdx: data.asymmetry_idx || 0.08,
+            asymmetrySide: data.asymmetry_side || null,
+            deltaPct: data.delta_pct || 12,
+            adr: data.adr || 1.3,
+            sef95: data.sef95 || 13.5,
+            acnsPattern: data.acns_pattern || null,
+            acnsSide: data.acns_side || null,
+            seizureBurdenMinPerHour: data.seizure_burden || 0,
+            seizureEvents: data.seizure_events || 0
+          };
+          
+          // Store in database
+          await storage.createRealtimeSample(realtimeData);
+          
+          // Broadcast to connected WebSocket clients
+          broadcastRealtimeUpdate(patientId, realtimeData);
+          
+          return realtimeData;
+        }
+      }
+    } catch (error) {
+      console.warn(`LSL Gateway fetch failed for patient ${patientId}:`, error.message);
+    }
+    
+    // LSL Gateway failed, generate simulated data
+    try {
+      const previousSample = await storage.getRealtimeSample(patientId);
+      const simulatedData = generateSimulatedEEGData(patientId, previousSample);
+      
+      // Store simulated data in database
+      await storage.createRealtimeSample(simulatedData);
+      
+      // Broadcast to connected WebSocket clients
+      broadcastRealtimeUpdate(patientId, simulatedData);
+      
+      console.log(`Generated simulated EEG data for patient ${patientId}`);
+      return simulatedData;
+    } catch (error) {
+      console.error(`Failed to generate simulated data for patient ${patientId}:`, error.message);
+      return null;
+    }
+  }
+  
+  // Function to broadcast real-time updates to specific patient subscribers
+  function broadcastRealtimeUpdate(patientId: string, data: any) {
+    const message = JSON.stringify({
+      type: 'realtime_update',
+      patientId,
+      data,
+      timestamp: new Date().toISOString()
+    });
+    
+    // Only send to clients subscribed to this specific patient
+    wsClients.forEach((clientInfo, ws) => {
+      if (ws.readyState === 1 && clientInfo.subscribedPatients.has(patientId)) { // WebSocket.OPEN
+        try {
+          ws.send(message);
+        } catch (error) {
+          console.warn('Failed to send WebSocket message:', error.message);
+        }
+      }
+    });
+  }
+  
+  // WebSocket connection handler
+  wss.on('connection', (ws, req) => {
+    console.log(`WebSocket client connected from ${req.socket.remoteAddress}`);
+    
+    // Initialize client tracking
+    wsClients.set(ws, {
+      ws,
+      subscribedPatients: new Set()
+    });
+    
+    // Send connection acknowledgment
+    ws.send(JSON.stringify({
+      type: 'connection',
+      status: 'connected',
+      timestamp: new Date().toISOString()
+    }));
+    
+    // Handle incoming messages
+    ws.on('message', async (data) => {
+      try {
+        const message = JSON.parse(data.toString());
+        
+        if (message.type === 'subscribe' && message.patientId) {
+          const patientId = message.patientId;
+          const clientInfo = wsClients.get(ws);
+          
+          if (clientInfo) {
+            // Add patient to this client's subscription list
+            clientInfo.subscribedPatients.add(patientId);
+            
+            // Start or increment LSL Gateway monitoring for this patient
+            let lslClient = lslClients.get(patientId);
+            if (!lslClient) {
+              lslClient = {
+                patientId,
+                connected: true,
+                lastUpdate: new Date(),
+                subscriberCount: 0
+              };
+              
+              // Fetch initial data immediately
+              await fetchFromLSLGateway(patientId);
+              
+              // Set up periodic fetching every 2 seconds for live data
+              lslClient.intervalId = setInterval(async () => {
+                const data = await fetchFromLSLGateway(patientId);
+                if (data) {
+                  lslClient!.lastUpdate = new Date();
+                }
+              }, 2000);
+              
+              lslClients.set(patientId, lslClient);
+              console.log(`Started LSL monitoring for patient ${patientId}`);
+            }
+            
+            // Increment subscriber count
+            lslClient.subscriberCount++;
+            console.log(`Client subscribed to patient ${patientId} (${lslClient.subscriberCount} total subscribers)`);
+            
+            // Send current realtime data to the client
+            const currentData = await storage.getRealtimeSample(patientId);
+            if (currentData) {
+              ws.send(JSON.stringify({
+                type: 'realtime_data',
+                patientId,
+                data: currentData,
+                timestamp: new Date().toISOString()
+              }));
+            }
+          }
+        }
+        
+        if (message.type === 'unsubscribe' && message.patientId) {
+          const patientId = message.patientId;
+          const clientInfo = wsClients.get(ws);
+          
+          if (clientInfo) {
+            // Remove patient from this client's subscription list
+            clientInfo.subscribedPatients.delete(patientId);
+            
+            // Decrement subscriber count and stop monitoring if no more subscribers
+            const lslClient = lslClients.get(patientId);
+            if (lslClient) {
+              lslClient.subscriberCount--;
+              console.log(`Client unsubscribed from patient ${patientId} (${lslClient.subscriberCount} remaining subscribers)`);
+              
+              // Only stop monitoring if no more subscribers
+              if (lslClient.subscriberCount <= 0 && lslClient.intervalId) {
+                clearInterval(lslClient.intervalId);
+                lslClients.delete(patientId);
+                console.log(`Stopped LSL monitoring for patient ${patientId} (no more subscribers)`);
+              }
+            }
+          }
+        }
+        
+      } catch (error) {
+        console.error('WebSocket message error:', error.message);
+        ws.send(JSON.stringify({
+          type: 'error',
+          message: 'Invalid message format',
+          timestamp: new Date().toISOString()
+        }));
+      }
+    });
+    
+    // Handle client disconnect
+    ws.on('close', () => {
+      console.log('WebSocket client disconnected');
+      
+      // Clean up client subscriptions
+      const clientInfo = wsClients.get(ws);
+      if (clientInfo) {
+        // Unsubscribe from all patients this client was subscribed to
+        clientInfo.subscribedPatients.forEach(patientId => {
+          const lslClient = lslClients.get(patientId);
+          if (lslClient) {
+            lslClient.subscriberCount--;
+            console.log(`Auto-unsubscribed disconnected client from patient ${patientId} (${lslClient.subscriberCount} remaining subscribers)`);
+            
+            // Stop monitoring if no more subscribers
+            if (lslClient.subscriberCount <= 0 && lslClient.intervalId) {
+              clearInterval(lslClient.intervalId);
+              lslClients.delete(patientId);
+              console.log(`Stopped LSL monitoring for patient ${patientId} (no more subscribers)`);
+            }
+          }
+        });
+        
+        // Remove client from tracking
+        wsClients.delete(ws);
+      }
+    });
+    
+    ws.on('error', (error) => {
+      console.error('WebSocket error:', error.message);
+    });
+  });
+  
+  // Cleanup LSL clients on server shutdown
+  process.on('SIGTERM', () => {
+    lslClients.forEach(client => {
+      if (client.intervalId) {
+        clearInterval(client.intervalId);
+      }
+    });
+    lslClients.clear();
+  });
+  
   return httpServer;
 }

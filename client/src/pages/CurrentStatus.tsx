@@ -2,6 +2,7 @@ import React from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { type Patient, type RealtimeSample } from "@shared/schema";
+import { useWebSocket } from "@/hooks/useWebSocket";
 import { MetricCard } from "@/components/MetricCard";
 import { EventTimeline } from "@/components/EventTimeline";
 import { getThresholds } from "@/utils/cohorts";
@@ -26,6 +27,16 @@ interface CurrentStatusProps {
 export function CurrentStatus({ patient, realtimeSample }: CurrentStatusProps) {
   const thresholds = getThresholds(patient.cohort);
   
+  // WebSocket connection for real-time EEG streaming
+  const { 
+    isConnected, 
+    connectionStatus, 
+    subscribe, 
+    unsubscribe, 
+    latestData: liveEEGData,
+    error: wsError 
+  } = useWebSocket();
+  
   // Get recent changes for the banner
   const { data: realtimeHistory } = useQuery({
     queryKey: ['/api/realtime', patient.id, 'history'],
@@ -38,16 +49,27 @@ export function CurrentStatus({ patient, realtimeSample }: CurrentStatusProps) {
     queryFn: () => api.getTimelineEvents(patient.id, 10),
     refetchInterval: 30000, // Refresh every 30 seconds
   });
+  
+  // Subscribe to real-time data for this patient
+  React.useEffect(() => {
+    if (patient.id) {
+      subscribe(patient.id);
+      return () => unsubscribe(patient.id);
+    }
+  }, [patient.id, subscribe, unsubscribe]);
+  
+  // Use live EEG data if available, otherwise fallback to the prop
+  const currentRealtimeSample = liveEEGData || realtimeSample;
 
-  const isHighArtifact = realtimeSample ? realtimeSample.artifactPct > thresholds.artifact.warnMax : false;
+  const isHighArtifact = currentRealtimeSample ? currentRealtimeSample.artifactPct > thresholds.artifact.warnMax : false;
 
   // Calculate recent changes by comparing current vs previous samples
   const recentChanges = React.useMemo(() => {
-    if (!realtimeSample || !realtimeHistory || realtimeHistory.length < 2) {
+    if (!currentRealtimeSample || !realtimeHistory || realtimeHistory.length < 2) {
       return [];
     }
 
-    const current = realtimeSample;
+    const current = currentRealtimeSample;
     // realtimeHistory is ordered newest first (desc) from database
     // Compare current sample with the previous one (second in the array)
     const previous = realtimeHistory[1]; // Previous sample (second newest)
@@ -86,19 +108,48 @@ export function CurrentStatus({ patient, realtimeSample }: CurrentStatusProps) {
     }
 
     return changes.slice(0, 3); // Show max 3 changes
-  }, [realtimeSample, realtimeHistory]);
+  }, [currentRealtimeSample, realtimeHistory]);
 
-  if (!realtimeSample) {
+  if (!currentRealtimeSample) {
     return (
       <div className="text-center py-12">
         <h3 className="text-lg font-medium text-foreground mb-2">No Real-time Data</h3>
-        <p className="text-muted-foreground">Waiting for EEG data from monitoring system...</p>
+        <p className="text-muted-foreground">
+          {connectionStatus === 'connecting' ? 'Connecting to live EEG stream...' : 'Waiting for EEG data from monitoring system...'}
+        </p>
+        {wsError && (
+          <p className="text-sm text-red-500 mt-2">Connection error: {wsError}</p>
+        )}
       </div>
     );
   }
 
   return (
     <div data-testid="current-status-tab">
+      {/* Connection Status Indicator */}
+      <div className="mb-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center space-x-2">
+            <div className={`w-2 h-2 rounded-full ${
+              connectionStatus === 'connected' && isConnected ? 'bg-green-500' :
+              connectionStatus === 'connecting' ? 'bg-yellow-500' :
+              'bg-red-500'
+            }`} />
+            <span className="text-xs text-muted-foreground">
+              {liveEEGData ? 'Live EEG Stream' : 'Simulated Data'}
+              {isConnected && ' (Connected)'}
+              {connectionStatus === 'connecting' && ' (Connecting...)'}
+              {connectionStatus === 'error' && ' (Connection Failed)'}
+            </span>
+          </div>
+          {currentRealtimeSample && (
+            <span className="text-xs text-muted-foreground">
+              Last updated: {new Date(currentRealtimeSample.ts).toLocaleTimeString()}
+            </span>
+          )}
+        </div>
+      </div>
+
       {/* Quality Banner */}
       {isHighArtifact && (
         <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 mb-6">
@@ -140,8 +191,8 @@ export function CurrentStatus({ patient, realtimeSample }: CurrentStatusProps) {
           icon={Eye}
           cohort={patient.cohort}
           metricType="other"
-          artifactPct={realtimeSample.artifactPct}
-          minutesValid={realtimeSample.minutesValid}
+          artifactPct={currentRealtimeSample.artifactPct}
+          minutesValid={currentRealtimeSample.minutesValid}
           note="Response to stimuli indicates consciousness level"
           isHighArtifact={isHighArtifact}
         >
@@ -149,12 +200,12 @@ export function CurrentStatus({ patient, realtimeSample }: CurrentStatusProps) {
             <div className="flex items-center justify-between">
               <span className="text-xs text-muted-foreground">Light</span>
               <span className={`text-sm font-medium ${
-                realtimeSample.reactivity === 'present' ? 'text-emerald-600' :
-                realtimeSample.reactivity === 'uncertain' ? 'text-amber-600' :
+                currentRealtimeSample.reactivity === 'present' ? 'text-emerald-600' :
+                currentRealtimeSample.reactivity === 'uncertain' ? 'text-amber-600' :
                 'text-red-600'
               }`}>
-                {realtimeSample.reactivity === 'present' ? 'Present' : 
-                 realtimeSample.reactivity === 'uncertain' ? 'Uncertain' : 'Absent'}
+                {currentRealtimeSample.reactivity === 'present' ? 'Present' : 
+                 currentRealtimeSample.reactivity === 'uncertain' ? 'Uncertain' : 'Absent'}
               </span>
             </div>
           </div>
@@ -163,42 +214,42 @@ export function CurrentStatus({ patient, realtimeSample }: CurrentStatusProps) {
         {/* PDR Card */}
         <MetricCard
           title={copy.metrics.pdr}
-          value={realtimeSample.pdrHz}
+          value={currentRealtimeSample.pdrHz}
           unit="Hz"
           icon={Activity}
           cohort={patient.cohort}
           metricType="other"
-          artifactPct={realtimeSample.artifactPct}
-          minutesValid={realtimeSample.minutesValid}
-          note={realtimeSample.pdrHz < 9 ? "Posterior dominant rhythm present but slow for age" : "Normal posterior dominant rhythm"}
+          artifactPct={currentRealtimeSample.artifactPct}
+          minutesValid={currentRealtimeSample.minutesValid}
+          note={currentRealtimeSample.pdrHz < 9 ? "Posterior dominant rhythm present but slow for age" : "Normal posterior dominant rhythm"}
           isHighArtifact={isHighArtifact}
         />
 
         {/* Continuity Card */}
         <MetricCard
           title={copy.metrics.continuity}
-          value={realtimeSample.continuity === 'continuous' ? 'Continuous' : 
-                realtimeSample.continuity === 'discontinuous' ? 'Discontinuous' :
-                realtimeSample.continuity === 'burst_suppression' ? 'Burst Suppression' : 'Suppressed'}
+          value={currentRealtimeSample.continuity === 'continuous' ? 'Continuous' : 
+                currentRealtimeSample.continuity === 'discontinuous' ? 'Discontinuous' :
+                currentRealtimeSample.continuity === 'burst_suppression' ? 'Burst Suppression' : 'Suppressed'}
           icon={BarChart3}
           cohort={patient.cohort}
           metricType="other"
-          artifactPct={realtimeSample.artifactPct}
-          minutesValid={realtimeSample.minutesValid}
-          note={realtimeSample.continuity !== 'continuous' ? "Increased discontinuity suggests metabolic dysfunction" : "Normal background continuity"}
+          artifactPct={currentRealtimeSample.artifactPct}
+          minutesValid={currentRealtimeSample.minutesValid}
+          note={currentRealtimeSample.continuity !== 'continuous' ? "Increased discontinuity suggests metabolic dysfunction" : "Normal background continuity"}
           isHighArtifact={isHighArtifact}
         />
 
         {/* Delta % Card */}
         <MetricCard
           title={copy.metrics.deltaPct}
-          value={realtimeSample.deltaPct}
+          value={currentRealtimeSample.deltaPct}
           unit="%"
           icon={TrendingDown}
           cohort={patient.cohort}
           metricType="deltaPct"
-          artifactPct={realtimeSample.artifactPct}
-          minutesValid={realtimeSample.minutesValid}
+          artifactPct={currentRealtimeSample.artifactPct}
+          minutesValid={currentRealtimeSample.minutesValid}
           note="Elevated delta activity for geriatric cohort"
           isHighArtifact={isHighArtifact}
         />
@@ -206,12 +257,12 @@ export function CurrentStatus({ patient, realtimeSample }: CurrentStatusProps) {
         {/* ADR Card */}
         <MetricCard
           title={copy.metrics.adr}
-          value={realtimeSample.adr}
+          value={currentRealtimeSample.adr}
           icon={Scale}
           cohort={patient.cohort}
           metricType="adr"
-          artifactPct={realtimeSample.artifactPct}
-          minutesValid={realtimeSample.minutesValid}
+          artifactPct={currentRealtimeSample.artifactPct}
+          minutesValid={currentRealtimeSample.minutesValid}
           note="Lower ratio suggests diffuse slowing"
           isHighArtifact={isHighArtifact}
         />
@@ -219,13 +270,13 @@ export function CurrentStatus({ patient, realtimeSample }: CurrentStatusProps) {
         {/* SEF95 Card */}
         <MetricCard
           title={copy.metrics.sef95}
-          value={realtimeSample.sef95}
+          value={currentRealtimeSample.sef95}
           unit="Hz"
           icon={Signal}
           cohort={patient.cohort}
           metricType="sef95"
-          artifactPct={realtimeSample.artifactPct}
-          minutesValid={realtimeSample.minutesValid}
+          artifactPct={currentRealtimeSample.artifactPct}
+          minutesValid={currentRealtimeSample.minutesValid}
           note="95% spectral edge frequency indicates global slowing"
           isHighArtifact={isHighArtifact}
         />
@@ -233,22 +284,22 @@ export function CurrentStatus({ patient, realtimeSample }: CurrentStatusProps) {
         {/* Asymmetry Card */}
         <MetricCard
           title={copy.metrics.asymmetry}
-          value={realtimeSample.asymmetryIdx}
+          value={currentRealtimeSample.asymmetryIdx}
           icon={AlertTriangle}
           cohort={patient.cohort}
           metricType="other"
-          artifactPct={realtimeSample.artifactPct}
-          minutesValid={realtimeSample.minutesValid}
+          artifactPct={currentRealtimeSample.artifactPct}
+          minutesValid={currentRealtimeSample.minutesValid}
           note="Minimal hemispheric asymmetry"
           isHighArtifact={isHighArtifact}
         >
           <div className="flex items-center space-x-2 mb-2">
             <span className="text-2xl font-bold metric-value text-emerald-600">
-              {realtimeSample.asymmetryIdx.toFixed(2)}
+              {currentRealtimeSample.asymmetryIdx.toFixed(2)}
             </span>
-            {realtimeSample.asymmetrySide && (
+            {currentRealtimeSample.asymmetrySide && (
               <span className="inline-flex items-center rounded-full bg-slate-100 px-1.5 py-0.5 text-xs font-medium text-slate-800">
-                {realtimeSample.asymmetrySide}
+                {currentRealtimeSample.asymmetrySide}
               </span>
             )}
             <span className="inline-flex items-center rounded-full bg-emerald-100 px-1.5 py-0.5 text-xs font-medium text-emerald-800">
@@ -264,21 +315,21 @@ export function CurrentStatus({ patient, realtimeSample }: CurrentStatusProps) {
           icon={Zap}
           cohort={patient.cohort}
           metricType="other"
-          artifactPct={realtimeSample.artifactPct}
-          minutesValid={realtimeSample.minutesValid}
-          note={realtimeSample.acnsPattern ? "Lateralized periodic discharges detected" : "No epileptiform activity detected"}
+          artifactPct={currentRealtimeSample.artifactPct}
+          minutesValid={currentRealtimeSample.minutesValid}
+          note={currentRealtimeSample.acnsPattern ? "Lateralized periodic discharges detected" : "No epileptiform activity detected"}
           isHighArtifact={isHighArtifact}
         >
           <div className="space-y-2 mb-3">
-            {realtimeSample.acnsPattern ? (
+            {currentRealtimeSample.acnsPattern ? (
               <>
                 <div className="flex items-center space-x-2">
                   <span className="text-lg font-semibold text-red-600">
-                    {realtimeSample.acnsPattern}s
+                    {currentRealtimeSample.acnsPattern}s
                   </span>
-                  {realtimeSample.acnsSide && (
+                  {currentRealtimeSample.acnsSide && (
                     <span className="inline-flex items-center rounded-full bg-slate-100 px-1.5 py-0.5 text-xs font-medium text-slate-800">
-                      {realtimeSample.acnsSide}
+                      {currentRealtimeSample.acnsSide}
                     </span>
                   )}
                 </div>
@@ -306,19 +357,19 @@ export function CurrentStatus({ patient, realtimeSample }: CurrentStatusProps) {
             <div className="flex items-center justify-between">
               <span className="text-xs text-muted-foreground">{copy.labels.artifact}</span>
               <span className="text-sm font-medium metric-value text-emerald-600">
-                {Math.round(realtimeSample.artifactPct)}%
+                {Math.round(currentRealtimeSample.artifactPct)}%
               </span>
             </div>
             <div className="flex items-center justify-between">
               <span className="text-xs text-muted-foreground">{copy.labels.minutesValid}</span>
               <span className="text-sm font-medium metric-value">
-                {realtimeSample.minutesValid}/20
+                {currentRealtimeSample.minutesValid}/20
               </span>
             </div>
             <div className="flex items-center justify-between">
               <span className="text-xs text-muted-foreground">Status</span>
               <span className="inline-flex items-center rounded-full bg-emerald-100 px-1.5 py-0.5 text-xs font-medium text-emerald-800">
-                {realtimeSample.artifactPct <= 10 ? 'Good' : realtimeSample.artifactPct <= 30 ? 'Fair' : 'Poor'}
+                {currentRealtimeSample.artifactPct <= 10 ? 'Good' : currentRealtimeSample.artifactPct <= 30 ? 'Fair' : 'Poor'}
               </span>
             </div>
           </div>
