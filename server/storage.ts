@@ -1,4 +1,6 @@
-import { type Patient, type Session, type RealtimeSample, type InsertPatient, type InsertSession, type InsertRealtimeSample } from "@shared/schema";
+import { type Patient, type Session, type RealtimeSample, type InsertPatient, type InsertSession, type InsertRealtimeSample, patients, sessions, realtimeSamples } from "@shared/schema";
+import { db } from "./db";
+import { eq, desc } from "drizzle-orm";
 import { randomUUID } from "crypto";
 
 export interface IStorage {
@@ -18,81 +20,112 @@ export interface IStorage {
   getRealtimeSamples(patientId: string, limit?: number): Promise<RealtimeSample[]>;
 }
 
-export class MemStorage implements IStorage {
-  private patients: Map<string, Patient> = new Map();
-  private sessions: Map<string, Session> = new Map();
-  private realtimeSamples: Map<string, RealtimeSample> = new Map();
+export class DatabaseStorage implements IStorage {
+  // Helper functions for JSON field serialization/deserialization
+  private serializeConditions(conditions: any[]): any[] {
+    return conditions.map(c => ({
+      ...c,
+      startedAt: c.startedAt instanceof Date ? c.startedAt.toISOString() : c.startedAt
+    }));
+  }
 
+  private serializeMedications(medications: any[]): any[] {
+    return medications.map(m => ({
+      ...m,
+      start: m.start instanceof Date ? m.start.toISOString() : m.start,
+      end: m.end && m.end instanceof Date ? m.end.toISOString() : m.end
+    }));
+  }
+
+  private serializeClinicalEvents(events: any[]): any[] {
+    return events.map(e => ({
+      ...e,
+      ts: e.ts instanceof Date ? e.ts.toISOString() : e.ts
+    }));
+  }
   async getPatient(id: string): Promise<Patient | undefined> {
-    return this.patients.get(id);
+    const [patient] = await db.select().from(patients).where(eq(patients.id, id));
+    return patient || undefined;
   }
 
   async createPatient(insertPatient: InsertPatient): Promise<Patient> {
     const id = randomUUID();
-    const now = new Date();
-    const patient: Patient = { 
-      ...insertPatient, 
-      id, 
-      createdAt: now, 
-      updatedAt: now 
+    const patientData = {
+      ...insertPatient,
+      id,
+      conditions: this.serializeConditions(insertPatient.conditions || []),
+      medications: this.serializeMedications(insertPatient.medications || [])
     };
-    this.patients.set(id, patient);
+    const [patient] = await db
+      .insert(patients)
+      .values(patientData)
+      .returning();
     return patient;
   }
 
   async getPatients(): Promise<Patient[]> {
-    return Array.from(this.patients.values());
+    return await db.select().from(patients);
   }
 
   async getSessions(patientId: string): Promise<Session[]> {
-    return Array.from(this.sessions.values())
-      .filter(session => session.patientId === patientId)
-      .sort((a, b) => a.date.getTime() - b.date.getTime());
+    return await db
+      .select()
+      .from(sessions)
+      .where(eq(sessions.patientId, patientId))
+      .orderBy(sessions.date);
   }
 
   async createSession(insertSession: InsertSession): Promise<Session> {
     const id = randomUUID();
-    const now = new Date();
-    const session: Session = { 
-      ...insertSession, 
-      id, 
-      createdAt: now, 
-      updatedAt: now 
+    const sessionData = {
+      ...insertSession,
+      id,
+      clinicalEvents: this.serializeClinicalEvents(insertSession.clinicalEvents || [])
     };
-    this.sessions.set(id, session);
+    const [session] = await db
+      .insert(sessions)
+      .values(sessionData)
+      .returning();
     return session;
   }
 
   async getLatestSession(patientId: string): Promise<Session | undefined> {
-    const sessions = await this.getSessions(patientId);
-    return sessions[sessions.length - 1];
+    const [session] = await db
+      .select()
+      .from(sessions)
+      .where(eq(sessions.patientId, patientId))
+      .orderBy(desc(sessions.date))
+      .limit(1);
+    return session || undefined;
   }
 
   async getRealtimeSample(patientId: string): Promise<RealtimeSample | undefined> {
-    return Array.from(this.realtimeSamples.values())
-      .filter(sample => sample.patientId === patientId)
-      .sort((a, b) => b.ts.getTime() - a.ts.getTime())[0];
+    const [sample] = await db
+      .select()
+      .from(realtimeSamples)
+      .where(eq(realtimeSamples.patientId, patientId))
+      .orderBy(desc(realtimeSamples.ts))
+      .limit(1);
+    return sample || undefined;
   }
 
   async createRealtimeSample(insertSample: InsertRealtimeSample): Promise<RealtimeSample> {
     const id = randomUUID();
-    const now = new Date();
-    const sample: RealtimeSample = { 
-      ...insertSample, 
-      id, 
-      createdAt: now, 
-      updatedAt: now 
-    };
-    this.realtimeSamples.set(id, sample);
+    const [sample] = await db
+      .insert(realtimeSamples)
+      .values({ ...insertSample, id })
+      .returning();
     return sample;
   }
 
   async getRealtimeSamples(patientId: string, limit = 10): Promise<RealtimeSample[]> {
-    return Array.from(this.realtimeSamples.values())
-      .filter(sample => sample.patientId === patientId)
-      .sort((a, b) => b.ts.getTime() - a.ts.getTime())
-      .slice(0, limit);
+    return await db
+      .select()
+      .from(realtimeSamples)
+      .where(eq(realtimeSamples.patientId, patientId))
+      .orderBy(desc(realtimeSamples.ts))
+      .limit(limit);
   }
 }
 
-export const storage = new MemStorage();
+export const storage = new DatabaseStorage();
