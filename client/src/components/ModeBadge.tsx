@@ -1,24 +1,26 @@
-import { useQuery } from "@tanstack/react-query";
-import { api } from "@/lib/api";
-import { getMode, getLSLGatewayUrl } from "@/lib/mongodb";
+import { useUIStore } from "@/store/ui-store";
 import { useEffect, useState } from "react";
-import copy from "../config/copy.en.json";
+import { Database, Wifi, WifiOff, Zap } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
 
 interface ModeBadgeProps {
-  patientId: string;
+  patientId?: string;
+  className?: string;
 }
 
-export function ModeBadge({ patientId }: ModeBadgeProps) {
+export function ModeBadge({ patientId, className }: ModeBadgeProps) {
   const [isConnected, setIsConnected] = useState(false);
-  const mode = getMode();
+  const { environment } = useUIStore();
 
-  // Poll LSL Gateway status in live mode
+  // Poll LSL Gateway status in hardware mode
   useEffect(() => {
-    if (mode !== 'live') return;
+    if (environment !== 'hardware' || !patientId) return;
     
     const checkConnection = async () => {
       try {
-        const response = await fetch(`${getLSLGatewayUrl()}?patientId=${patientId}`, {
+        const lslUrl = import.meta.env.VITE_LSL_GATEWAY_URL || "http://localhost:7070/rt";
+        const response = await fetch(`${lslUrl}?patientId=${patientId}`, {
           signal: AbortSignal.timeout(1500)
         });
         setIsConnected(response.ok);
@@ -31,28 +33,51 @@ export function ModeBadge({ patientId }: ModeBadgeProps) {
     const interval = setInterval(checkConnection, 10000); // Check every 10 seconds
     
     return () => clearInterval(interval);
-  }, [mode, patientId]);
+  }, [environment, patientId]);
 
-  const getStatusLabel = () => {
-    if (mode === 'simulation') {
-      return copy.labels.modeSimulation;
-    }
-    return isConnected 
-      ? copy.labels.modeLiveConnected 
-      : copy.labels.modeLiveDisconnected;
-  };
+  if (!environment) {
+    return null;
+  }
 
-  const getStatusColor = () => {
-    if (mode === 'simulation') return 'bg-secondary';
-    return isConnected ? 'bg-emerald-500' : 'bg-red-500';
-  };
+  const isSimulation = environment === "simulation";
+  const isHardware = environment === "hardware";
 
   return (
-    <div className="flex items-center space-x-2" data-testid="mode-badge">
-      <div className="flex items-center space-x-1 rounded-full bg-secondary px-2.5 py-1 text-xs font-medium">
-        <div className={`h-2 w-2 rounded-full ${getStatusColor()}`}></div>
-        <span data-testid="mode-status">{getStatusLabel()}</span>
-      </div>
+    <div className={cn("flex items-center gap-2", className)} data-testid="mode-badge">
+      {/* Environment Badge */}
+      <Badge 
+        variant={isSimulation ? "secondary" : "default"}
+        className={cn(
+          "flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium",
+          isSimulation && "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300",
+          isHardware && "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300"
+        )}
+        data-testid={`badge-environment-${environment}`}
+      >
+        {isSimulation && <Database className="h-3.5 w-3.5" />}
+        {isHardware && <Zap className="h-3.5 w-3.5" />}
+        {isSimulation ? "Simulation Mode" : "Hardware Mode"}
+      </Badge>
+
+      {/* LSL Connection Status (only for Hardware mode) */}
+      {isHardware && (
+        <Badge 
+          variant={isConnected ? "default" : "destructive"}
+          className={cn(
+            "flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium",
+            isConnected && "bg-emerald-100 text-emerald-800 dark:bg-emerald-900 dark:text-emerald-300",
+            !isConnected && "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300"
+          )}
+          data-testid={`badge-lsl-${isConnected ? 'connected' : 'disconnected'}`}
+        >
+          {isConnected ? (
+            <Wifi className="h-3.5 w-3.5" />
+          ) : (
+            <WifiOff className="h-3.5 w-3.5" />
+          )}
+          LSL {isConnected ? "Connected" : "Disconnected"}
+        </Badge>
+      )}
     </div>
   );
 }

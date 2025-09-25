@@ -124,6 +124,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       // Save prediction to database
       const predictionData = {
+        id: crypto.randomUUID(),
         sessionId: session.id,
         patientId: session.patientId,
         modelVersion: randomForestModel.getModelVersion(),
