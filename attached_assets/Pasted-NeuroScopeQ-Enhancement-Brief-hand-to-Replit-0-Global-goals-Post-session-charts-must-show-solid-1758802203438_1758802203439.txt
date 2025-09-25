@@ -1,0 +1,181 @@
+NeuroScopeQ – Enhancement Brief (hand to Replit)
+0) Global goals
+Post-session charts must show solid vs dashed lines to make normal vs abnormal status obvious (and optional ML overlay remains dashed too).
+Add a Patient selector and an expanded Patient Profile.
+Add a landing screen to choose Simulation vs Hardware environments.
+In Hardware environment: show a Profile form before connecting; once connected, display live cards; store snapshots in the live Mongo DB.
+Show a toast/notification when 20 minutes of recording is complete and enable a “View Post-Session” action.
+Add Download Report (PDF) with detailed values + interpretations.
+Keep all labels/data in English.
+1) Information architecture (new/changed screens)
+Environment Picker (new first screen)
+Two cards:
+Simulation (TUH-like) → uses MONGODB_URI_SIM
+Hardware (LSL Live) → uses MONGODB_URI_LIVE
+Store selection in app state; show it as a ModeBadge in header on all pages.
+Patient Select (new)
+Search + filters (Cohort: Adult/Geriatric/Peds; Setting: Ambulatory/Ward/ICU).
+Table/list: Name · ID · Age/Sex · Cohort · Setting · Last session date.
+Actions: Open → goes to Current Status; Profile opens drawer.
+Profile & Intake (expanded)
+In Simulation: read-only from DB (demographics, conditions, meds).
+In Hardware: form (Name, Age, Sex, Cohort, Setting, Conditions, Medications). On submit:
+Create/Update Patient in live DB.
+Show Connect device call-to-action (CTA).
+Current Status
+Header: ModeBadge (Simulation/TUH vs LSL Connected/Disconnected), PatientBadge, Signal Quality.
+Same cards as before; RecordingTimer if in Hardware (counting to 20:00).
+Event Timeline at bottom.
+When 20 min complete → show toast and primary button “View Post-Session”.
+Evolution (post-session)
+Controls row: range chips; metric pills; Use ML model (TUH-trained) toggle; Download report button.
+Charts modify: add solid vs dashed presentation for normality.
+Solid = patient’s value; dashed = normal threshold/reference OR dashed ML overlay (when enabled).
+Keep cohort bands (shaded) for quick context.
+2) Database additions (Mongo)
+No new collections are strictly required; use existing split by DB:
+Simulation DB: neuroscopeq_sim (already seeded with 5 TUH-like cases).
+Live DB: neuroscopeq_live (store real patient profiles + real-time snapshots; you can seed minimal demo patients for device validation).
+If you want a small “hardware demo” dataset, add a light seed to neuroscopeq_live (same schema).
+3) API updates
+3.1 Environment status
+Frontend chooses environment; backend already switches by MODE. Expose a health endpoint:
+GET /api/status -> { mode: "simulation"|"live", db: "neuroscopeq_sim|neuroscopeq_live" }
+3.2 Patients
+GET  /api/patients?search=&cohort=&setting=   // Patient list for selector
+POST /api/patient                              // Create/Update from Hardware profile form
+3.3 Recording control (Hardware)
+Start a recording timer server-side and emit completion after 20 minutes (SSE) or use client timer + server validation.
+POST /api/recordings/start/:patientId -> { startedAt, endsAt }
+GET  /api/recordings/events/:patientId  // SSE: { type: "recordingComplete" }
+3.4 Report
+GET /api/report/:patientId?from=..&to=..  // returns a PDF
+Server renders an HTML template with patient profile, current snapshot, trends, and interpretations; convert to PDF with Puppeteer.
+4) UI components (new/changed)
+4.1 EnvironmentPicker
+Two cards with descriptive copy.
+On select: set app mode in state and route to Patient Select.
+4.2 PatientSelect
+Search input + cohort/setting filters.
+Table with row action Open and secondary Profile.
+Uses GET /api/patients.
+4.3 PatientProfileForm (Hardware only)
+Fields: Name, Age, Sex, Cohort, Setting, Conditions[], Medications[].
+Submit → POST /api/patient → show Connect device CTA.
+4.4 ModeBadge (update)
+Simulation: “Simulation (TUH-like)” ⚪️
+Live: LSL: Connected 🟢 / LSL: Disconnected 🟥
+4.5 RecordingTimer (Hardware only)
+Large countdown (mm:ss) + subtle progress ring.
+When hits 20:00 → fires toast: “Recording window complete. View post-session analysis.”
+Button routes to Evolution.
+4.6 TrendChart (updated)
+Props: series[], bands[], thresholdLines[].
+Show solid patient series; dashed reference/threshold/ML series.
+Keep cohort bands as faint background.
+Recharts stub (solid + dashed + thresholds):
+<LineChart data={data}>
+  <CartesianGrid strokeDasharray="3 3" />
+  <XAxis dataKey="date" />
+  <YAxis />
+  <Tooltip />
+  {/* Solid: patient */}
+  <Line type="monotone" dataKey="value" name="Patient" strokeWidth={2} dot />
+  {/* Dashed: normal threshold/reference */}
+  <Line type="monotone" dataKey="normalUpper" name="Normal (upper)" strokeDasharray="6 4" dot={false} />
+  <Line type="monotone" dataKey="normalLower" name="Normal (lower)" strokeDasharray="6 4" dot={false} />
+  {/* Optional ML overlay (dashed) */}
+  {mlOn && <Line type="monotone" dataKey="mlValue" name="ML (TUH-trained)" strokeDasharray="4 4" />}
+</LineChart>
+4.7 DownloadReportButton
+Click → GET /api/report/:patientId?...
+Show toast “Report is being generated…” then downloads PDF.
+5) Post-session charts: normal vs abnormal (solid/dashed)
+Apply to Encephalopathy, Delta%, ADR, SEF95, Asymmetry:
+Solid line = patient values per session.
+Dashed horizontal lines = normal band limits for the cohort (e.g., Adult: Enceph ≤2, Mild 3–5, Severe ≥6; ADR ≥1.0; SEF95 ≥12; Delta% ≤15; Asymmetry ≤0.10).
+Keep the shaded cohort band for glanceability.
+6) Report content (PDF)
+Sections:
+Patient Profile: demographics, cohort/setting, conditions, medications.
+Current Snapshot: all real-time metrics with severity and short interpretations.
+Trends: Encephalopathy, Delta%, ADR, SEF95, Continuity (stacked), Reactivity (heatmap), Seizure burden (bars), ACNS rate, Asymmetry.
+Quality & Provenance: artifact %, minutes valid, mode (Simulation/LSL), ML note if used.
+Auto summary (bullet): three lines with the most important clinical statements.
+Server: render HTML→PDF with Puppeteer.
+npm i puppeteer
+// src/api/report.ts (concept)
+import puppeteer from "puppeteer";
+export async function renderReport(html: string) {
+  const browser = await puppeteer.launch({ args:['--no-sandbox'] });
+  const page = await browser.newPage();
+  await page.setContent(html, { waitUntil: "networkidle0" });
+  const pdf = await page.pdf({ format: "A4", printBackground: true, margin:{ top:"15mm", right:"12mm", bottom:"15mm", left:"12mm" }});
+  await browser.close();
+  return pdf;
+}
+7) Notifications (20-minute completion)
+Frontend
+Start timer when user hits “Start Recording”.
+Subscribe to /api/recordings/events/:patientId (SSE) if available; else rely on client timer.
+On complete: toast + “View Post-Session” button → switch tab to Evolution.
+Backend (SSE stub)
+// src/api/routes.ts
+router.get('/api/recordings/events/:id', async (req,res)=>{
+  res.setHeader('Content-Type','text/event-stream');
+  res.setHeader('Cache-Control','no-cache');
+  res.flushHeaders();
+  // demo: emit completion in 20 min; in real use, tie to the LSL gateway/session
+  setTimeout(()=>{ res.write(`event: recordingComplete\ndata: {"patientId":"${req.params.id}"}\n\n`); }, 20*60*1000);
+});
+8) Copy (English)
+Environment Picker:
+Simulation (TUH-like): “Replay synthetic cases for UI validation and training.”
+Hardware (LSL Live): “Connect to an EEG device and stream real-time metrics.”
+Timer toast: “Recording window complete (20 min). View post-session analysis.”
+Report: “Export PDF — patient profile, snapshot, trends, quality & notes.”
+Mode badges: Simulation (TUH-like) ⚪️ / LSL: Connected 🟢 / LSL: Disconnected 🟥.
+9) QA checklist
+ Landing screen forces explicit choice of Simulation or Hardware; header badge matches mode.
+ Patient selector lists/filters correctly; profile drawer/form works; creates patient in the correct DB (sim vs live).
+ In Hardware, cannot see live cards until profile saved and device connected.
+ RecordingTimer counts to 20:00 and triggers toast + CTA to Evolution.
+ Post-session charts show solid patient lines + dashed normal thresholds (and ML dashed overlay when toggle is ON).
+ Report downloads as PDF with all sections filled and clear interpretations.
+ No raw traces or spectrograms.
+10) Small code inserts for clarity
+Patient list endpoint (server)
+router.get("/api/patients", async (req,res)=>{
+  await connectDB();
+  const { search="", cohort, setting } = req.query as any;
+  const q:any = {};
+  if (search) q.name = { $regex: new RegExp(search,'i') };
+  if (cohort) q.cohort = cohort;
+  if (setting) q.setting = setting;
+  const pts = await Patient.find(q).sort({ updatedAt:-1 }).limit(200).lean();
+  res.json(pts);
+});
+Download report route
+router.get("/api/report/:patientId", async (req,res)=>{
+  const p = await Patient.findById(req.params.patientId).lean();
+  const s = await Session.find({ patientId: p._id }).sort({ date:1 }).lean();
+  const html = renderReportHtml({ patient:p, sessions:s }); // your template fn
+  const pdf = await renderReport(html);
+  res.setHeader("Content-Type","application/pdf");
+  res.setHeader("Content-Disposition", `attachment; filename="report_${p.name}.pdf"`);
+  res.send(Buffer.from(pdf));
+});
+Recharts dashed thresholds (example, Encephalopathy)
+const series = sessions.map(s => ({
+  date: s.date,
+  value: s.encephalopathyScore,
+  normalLower: 0,          // for band visual
+  normalUpper: 2
+}));
+
+<LineChart data={series}>
+  {/* …axes/grid/tooltip */}
+  <Line dataKey="value" name="Patient" strokeWidth={2} dot />
+  <Line dataKey="normalUpper" name="Normal upper" strokeDasharray="6 4" dot={false} />
+  <ReferenceLine y={6} strokeDasharray="6 4" label="Severe ≥6" />
+</LineChart>
