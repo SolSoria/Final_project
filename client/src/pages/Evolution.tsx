@@ -1,3 +1,4 @@
+import React from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { type Patient } from "@shared/schema";
@@ -5,9 +6,10 @@ import { useUIStore } from "@/store/ui-store";
 import { TrendChart } from "@/components/TrendChart";
 import { StackedContinuity } from "@/components/StackedContinuity";
 import { HeatmapReactivity } from "@/components/HeatmapReactivity";
+import { useMlPredictions, useGenerateMlPrediction } from "@/hooks/useMlPredictions";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
-import { ArrowUp, ArrowDown, CheckCircle } from "lucide-react";
+import { ArrowUp, ArrowDown, CheckCircle, Loader2 } from "lucide-react";
 
 interface EvolutionProps {
   patient: Patient;
@@ -20,6 +22,22 @@ export function Evolution({ patient }: EvolutionProps) {
     queryKey: ['/api/sessions', patient.id],
     queryFn: () => api.getSessions(patient.id),
   });
+
+  const { data: mlPredictions } = useMlPredictions(patient.id);
+  const generateMlPrediction = useGenerateMlPrediction();
+
+  // Generate ML predictions when ML mode is enabled and we have sessions
+  React.useEffect(() => {
+    if (mlMode && sessions && sessions.length > 0) {
+      // Generate predictions for sessions that don't have them yet
+      sessions.forEach(session => {
+        const hasExistingPrediction = mlPredictions?.some(ml => ml.sessionId === session.id);
+        if (!hasExistingPrediction) {
+          generateMlPrediction.mutate({ sessionId: session.id });
+        }
+      });
+    }
+  }, [mlMode, sessions, mlPredictions, generateMlPrediction]);
 
   if (isLoading) {
     return (
@@ -109,6 +127,12 @@ export function Evolution({ patient }: EvolutionProps) {
             data-testid="ml-toggle"
           />
           <label className="text-sm font-medium">Use ML model (TUH-trained)</label>
+          {mlMode && generateMlPrediction.isPending && (
+            <div className="flex items-center space-x-1 text-xs text-muted-foreground">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              <span>Generating predictions...</span>
+            </div>
+          )}
         </div>
       </div>
       
@@ -117,6 +141,7 @@ export function Evolution({ patient }: EvolutionProps) {
         <div className="mb-8">
           <TrendChart
             sessions={limitedSessions}
+            mlPredictions={mlPredictions}
             metric="encephalopathyScore"
             title="Encephalopathy Score Trend"
             showMLOverlay={mlMode}
@@ -135,6 +160,7 @@ export function Evolution({ patient }: EvolutionProps) {
         {selectedMetrics.includes('deltaPct') && (
           <TrendChart
             sessions={limitedSessions}
+            mlPredictions={mlPredictions}
             metric="deltaPct"
             title="Delta % Trend"
             showMLOverlay={mlMode}
@@ -144,6 +170,7 @@ export function Evolution({ patient }: EvolutionProps) {
         {selectedMetrics.includes('sef95') && (
           <TrendChart
             sessions={limitedSessions}
+            mlPredictions={mlPredictions}
             metric="sef95"
             title="SEF95 Trend"
             showMLOverlay={mlMode}
@@ -153,6 +180,7 @@ export function Evolution({ patient }: EvolutionProps) {
         {selectedMetrics.includes('adr') && (
           <TrendChart
             sessions={limitedSessions}
+            mlPredictions={mlPredictions}
             metric="adr"
             title="Alpha/Delta Ratio Trend"
             showMLOverlay={mlMode}

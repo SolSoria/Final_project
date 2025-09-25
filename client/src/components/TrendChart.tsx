@@ -1,20 +1,27 @@
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, ReferenceLine, Area, AreaChart } from 'recharts';
-import { type Session } from "@shared/schema";
+import { type Session, type MlPrediction } from "@shared/schema";
 import { formatDate } from "@/utils/formatting";
 
 interface TrendChartProps {
   sessions: Session[];
+  mlPredictions?: MlPrediction[];
   metric: 'encephalopathyScore' | 'deltaPct' | 'adr' | 'sef95';
   title: string;
   showMLOverlay?: boolean;
 }
 
-export function TrendChart({ sessions, metric, title, showMLOverlay = false }: TrendChartProps) {
-  const data = sessions.map(session => ({
-    date: formatDate(session.date),
-    value: session[metric],
-    fullDate: session.date
-  }));
+export function TrendChart({ sessions, mlPredictions = [], metric, title, showMLOverlay = false }: TrendChartProps) {
+  const data = sessions.map(session => {
+    // Find corresponding ML prediction for this session
+    const mlPrediction = mlPredictions.find(ml => ml.sessionId === session.id);
+    
+    return {
+      date: formatDate(session.date),
+      value: session[metric],
+      mlValue: mlPrediction ? mlPrediction[metric] : null,
+      fullDate: session.date
+    };
+  });
 
   const getThresholdLines = () => {
     switch (metric) {
@@ -103,11 +110,13 @@ export function TrendChart({ sessions, metric, title, showMLOverlay = false }: T
             {showMLOverlay && (
               <Line
                 type="monotone"
-                dataKey="value" // In real implementation, this would be ML prediction data
+                dataKey="mlValue"
                 stroke="hsl(var(--chart-2))"
                 strokeWidth={2}
                 strokeDasharray="5 5"
                 dot={false}
+                connectNulls={false}
+                name="ML (RF)"
               />
             )}
           </LineChart>

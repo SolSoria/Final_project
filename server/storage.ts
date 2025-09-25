@@ -1,4 +1,4 @@
-import { type Patient, type Session, type RealtimeSample, type InsertPatient, type InsertSession, type InsertRealtimeSample, patients, sessions, realtimeSamples } from "@shared/schema";
+import { type Patient, type Session, type RealtimeSample, type MlPrediction, type InsertPatient, type InsertSession, type InsertRealtimeSample, type InsertMlPrediction, patients, sessions, realtimeSamples, mlPredictions } from "@shared/schema";
 import { db } from "./db";
 import { eq, desc } from "drizzle-orm";
 import { randomUUID } from "crypto";
@@ -11,6 +11,7 @@ export interface IStorage {
   
   // Sessions
   getSessions(patientId: string): Promise<Session[]>;
+  getSession(sessionId: string): Promise<Session | undefined>;
   createSession(session: InsertSession): Promise<Session>;
   getLatestSession(patientId: string): Promise<Session | undefined>;
   
@@ -18,6 +19,11 @@ export interface IStorage {
   getRealtimeSample(patientId: string): Promise<RealtimeSample | undefined>;
   createRealtimeSample(sample: InsertRealtimeSample): Promise<RealtimeSample>;
   getRealtimeSamples(patientId: string, limit?: number): Promise<RealtimeSample[]>;
+  
+  // ML Predictions
+  getMlPredictions(patientId: string): Promise<MlPrediction[]>;
+  createMlPrediction(prediction: InsertMlPrediction): Promise<MlPrediction>;
+  getMlPredictionForSession(sessionId: string): Promise<MlPrediction | undefined>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -75,6 +81,15 @@ export class DatabaseStorage implements IStorage {
       .orderBy(sessions.date);
   }
 
+  async getSession(sessionId: string): Promise<Session | undefined> {
+    const [session] = await db
+      .select()
+      .from(sessions)
+      .where(eq(sessions.id, sessionId))
+      .limit(1);
+    return session || undefined;
+  }
+
   async createSession(insertSession: InsertSession): Promise<Session> {
     const id = randomUUID();
     const sessionData = {
@@ -125,6 +140,32 @@ export class DatabaseStorage implements IStorage {
       .where(eq(realtimeSamples.patientId, patientId))
       .orderBy(desc(realtimeSamples.ts))
       .limit(limit);
+  }
+
+  async getMlPredictions(patientId: string): Promise<MlPrediction[]> {
+    return await db
+      .select()
+      .from(mlPredictions)
+      .where(eq(mlPredictions.patientId, patientId))
+      .orderBy(desc(mlPredictions.createdAt));
+  }
+
+  async createMlPrediction(insertPrediction: InsertMlPrediction): Promise<MlPrediction> {
+    const id = randomUUID();
+    const [prediction] = await db
+      .insert(mlPredictions)
+      .values({ ...insertPrediction, id })
+      .returning();
+    return prediction;
+  }
+
+  async getMlPredictionForSession(sessionId: string): Promise<MlPrediction | undefined> {
+    const [prediction] = await db
+      .select()
+      .from(mlPredictions)
+      .where(eq(mlPredictions.sessionId, sessionId))
+      .limit(1);
+    return prediction || undefined;
   }
 }
 

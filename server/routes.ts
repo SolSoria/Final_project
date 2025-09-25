@@ -2,7 +2,8 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { WebSocketServer } from "ws";
 import { storage } from "./storage";
-import { insertPatientSchema, insertSessionSchema, insertRealtimeSchema } from "@shared/schema";
+import { insertPatientSchema, insertSessionSchema, insertRealtimeSchema, insertMlPredictionSchema } from "@shared/schema";
+import { randomForestModel } from "./ml/randomForest";
 import { z } from "zod";
 
 export async function registerRoutes(app: Express): Promise<Server> {
@@ -65,6 +66,63 @@ export async function registerRoutes(app: Express): Promise<Server> {
         res.status(400).json({ error: "Invalid session data", details: error.errors });
       } else {
         res.status(500).json({ error: "Failed to create session" });
+      }
+    }
+  });
+
+  // Get ML predictions for patient
+  app.get("/api/ml-predictions/:patientId", async (req, res) => {
+    try {
+      const predictions = await storage.getMlPredictions(req.params.patientId);
+      res.json(predictions);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch ML predictions" });
+    }
+  });
+
+  // Generate ML prediction for session
+  app.post("/api/ml-predictions/:sessionId", async (req, res) => {
+    try {
+      const sessionId = req.params.sessionId;
+      
+      // Check if prediction already exists
+      const existingPrediction = await storage.getMlPredictionForSession(sessionId);
+      if (existingPrediction) {
+        return res.json(existingPrediction);
+      }
+
+      // Get the session to make prediction for
+      const session = await storage.getSession(sessionId);
+      if (!session) {
+        return res.status(404).json({ error: "Session not found" });
+      }
+
+      // Generate ML prediction using Random Forest model
+      const mlPrediction = randomForestModel.predict(session);
+      
+      // Save prediction to database
+      const predictionData = {
+        sessionId: session.id,
+        patientId: session.patientId,
+        modelVersion: randomForestModel.getModelVersion(),
+        encephalopathyScore: mlPrediction.encephalopathyScore,
+        deltaPct: mlPrediction.deltaPct,
+        adr: mlPrediction.adr,
+        sef95: mlPrediction.sef95,
+        confidence: mlPrediction.confidence,
+        features: mlPrediction.features
+      };
+
+      const validatedData = insertMlPredictionSchema.parse(predictionData);
+      const savedPrediction = await storage.createMlPrediction(validatedData);
+      
+      res.status(201).json(savedPrediction);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        res.status(400).json({ error: "Invalid prediction data", details: error.errors });
+      } else {
+        console.error("ML prediction error:", error);
+        res.status(500).json({ error: "Failed to generate ML prediction" });
       }
     }
   });
