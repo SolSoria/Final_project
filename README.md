@@ -9,6 +9,8 @@ NeuroScopeQ is a real-time EEG clinical monitoring dashboard designed to make EE
 ### Core Functionality
 - **Real-time EEG Monitoring**: Live EEG data visualization with severity bands and quality gates
 - **Post-session Analysis**: Trend charts and comparative analysis across sessions
+- **Enhanced ML Pipeline**: Advanced qEEG feature extraction with Random Forest modeling
+- **Real-time Processing**: Sliding window analysis for continuous monitoring
 - **Dual Mode Support**: 
   - Simulation mode with synthetic TUH-like cases
   - Live mode with LSL Gateway integration
@@ -21,6 +23,15 @@ NeuroScopeQ is a real-time EEG clinical monitoring dashboard designed to make EE
 - **Real-time Dashboard**: Current status with live metrics and signal quality
 - **Evolution Analysis**: Post-session charts with normal/abnormal indicators
 - **Responsive Design**: Works across different screen sizes and devices
+
+### ML Pipeline Features
+- **qEEG Feature Extraction**: Comprehensive quantitative EEG analysis including spectral bands, continuity, reactivity, asymmetry, and seizure detection
+- **Enhanced Random Forest**: Advanced ensemble learning for encephalopathy scoring with clinical interpretability
+- **Artifact Detection**: Intelligent identification of blink, motion/EMG, and flatline artifacts with quality gating
+- **Sliding Window Processing**: Real-time analysis with configurable window sizes and overlap for continuous monitoring
+- **Cohort-Specific Thresholds**: Age and setting appropriate thresholds for PEDS, ADULT, and GERIATRIC populations
+- **ACNS Pattern Detection**: Standardized American Clinical Neurophysiology Society pattern classification
+- **Real-time Alerts**: Automated alerts for critical conditions like high artifact levels, severe encephalopathy, and seizure activity
 
 ## Technology Stack
 
@@ -103,7 +114,14 @@ NeuroScope/
 │   │   └── lib/            # Utility functions
 │   └── index.html         # Main HTML file
 ├── server/                # Express backend
-│   ├── ml/               # Machine learning modules
+│   ├── ml/               # Enhanced ML Pipeline
+│   │   ├── qEEGProcessor.ts     # qEEG interfaces and types
+│   │   ├── qEEGFeatures.ts      # qEEG feature extraction
+│   │   ├── preprocessing.ts     # Signal preprocessing pipeline
+│   │   ├── artifactDetection.ts # Artifact detection system
+│   │   ├── randomForest.ts      # Enhanced Random Forest model
+│   │   ├── thresholdConfig.ts   # Cohort-specific thresholds
+│   │   └── slidingWindowProcessor.ts # Real-time processing
 │   ├── pdf/              # PDF generation utilities
 │   ├── db.ts             # Database configuration
 │   └── index.ts          # Main server file
@@ -123,12 +141,16 @@ NeuroScope/
 - **ML Predictions**: Machine learning analysis results
 
 ### Clinical Metrics
-- **Encephalopathy Score**: Overall brain function assessment
-- **Delta Percentage**: Delta wave activity measurement
-- **ADR**: Amplitude-integrated EEG ratio
-- **SEF95**: Spectral edge frequency
-- **Continuity Patterns**: Brain wave continuity assessment
-- **ACNS Patterns**: Standardized EEG pattern classification
+- **Encephalopathy Score**: Overall brain function assessment (0-10 scale)
+- **Spectral Analysis**: Delta, theta, alpha, beta, and gamma band power percentages
+- **ADR**: Amplitude-integrated EEG ratio for background activity
+- **SEF95**: Spectral edge frequency at 95% power distribution
+- **Continuity Patterns**: Classification of continuous, discontinuous, burst-suppression, and suppressed patterns
+- **Reactivity Assessment**: Stimulus response analysis for neurological function
+- **Asymmetry Analysis**: Hemispheric power differences and lateralization
+- **Seizure Detection**: Burden calculation and event identification
+- **ACNS Patterns**: Standardized EEG pattern classification (PDs, RDA+, GRDA+, etc.)
+- **Artifact Metrics**: Blink, motion/EMG, and flatline artifact percentages with quality assessment
 
 ### Cohort-Specific Features
 - **Age Groups**: PEDS, ADULT, GERIATRIC

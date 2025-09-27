@@ -132,10 +132,14 @@ server/
 │   ├── realtime-service.ts  # Real-time data processing
 │   ├── ml-service.ts        # Machine learning integration
 │   └── pdf-service.ts       # PDF generation
-├── ml/
-│   ├── randomForest.ts      # Random Forest implementation
-│   ├── model-training.ts    # Model training utilities
-│   └── predictions.ts       # Prediction logic
+├── ml/                      # Enhanced ML Pipeline
+│   ├── qEEGProcessor.ts     # qEEG interfaces and types
+│   ├── qEEGFeatures.ts      # qEEG feature extraction
+│   ├── preprocessing.ts     # Signal preprocessing pipeline
+│   ├── artifactDetection.ts # Artifact detection system
+│   ├── randomForest.ts      # Enhanced Random Forest model
+│   ├── thresholdConfig.ts   # Cohort-specific thresholds
+│   └── slidingWindowProcessor.ts # Real-time processing
 ├── pdf/
 │   ├── clinical-report.ts   # PDF template generation
 │   ├── templates/           # HTML templates
@@ -305,24 +309,181 @@ class TUHDataProcessor {
 
 ### Machine Learning Integration
 
-#### Random Forest Model
+#### Enhanced qEEG Feature Extraction Pipeline
 ```typescript
-// ML Service Architecture
-class MLService {
-  private model: RandomForestModel;
+// qEEG Feature Extraction Architecture
+class qEEGFeatureExtractor {
+  private artifactDetector: ArtifactDetector;
+  private spectralBands: SpectralBands;
   
-  async initialize(): Promise<void> {
-    this.model = await RandomForestModel.load('model.json');
+  async extractFeatures(data: EEGData): Promise<qEEGFeatures> {
+    // 1. Preprocessing: Band-pass, notch, CAR
+    const preprocessed = await this.preprocessEEG(data);
+    
+    // 2. Artifact Detection: Blink, motion, flatline
+    const artifacts = await this.artifactDetector.detectArtifacts(preprocessed);
+    
+    // 3. Spectral Analysis: Power spectral density
+    const spectral = await this.analyzeSpectralBands(preprocessed);
+    
+    // 4. Continuity Analysis: Pattern classification
+    const continuity = await this.analyzeContinuity(preprocessed);
+    
+    // 5. Reactivity Testing: Stimulus response
+    const reactivity = await this.analyzeReactivity(preprocessed);
+    
+    // 6. Asymmetry Analysis: Hemispheric differences
+    const asymmetry = await this.analyzeAsymmetry(preprocessed);
+    
+    // 7. Seizure Detection: Burden and events
+    const seizure = await this.detectSeizureActivity(preprocessed);
+    
+    // 8. ACNS Pattern Detection: Standardized patterns
+    const acnsPatterns = await this.detectACNSPatterns(preprocessed);
+    
+    return {
+      spectral,
+      continuity,
+      reactivity,
+      asymmetry,
+      seizure,
+      acnsPatterns,
+      artifacts,
+      encephalopathyScore: this.calculateEncephalopathyScore({
+        spectral, continuity, reactivity, asymmetry, seizure, artifacts
+      })
+    };
+  }
+}
+```
+
+#### Enhanced Random Forest Model
+```typescript
+// Enhanced Random Forest for Encephalopathy Assessment
+class EnhancedRandomForestModel {
+  private trees: DecisionTree[];
+  private thresholdConfig: ThresholdConfiguration;
+  
+  predict(features: qEEGFeatures): MLPrediction {
+    // Extract ML features from qEEG features
+    const mlFeatures: MLFeatures = {
+      deltaPct: features.spectral.delta.power,
+      thetaPct: features.spectral.theta.power,
+      alphaPct: features.spectral.alpha.power,
+      betaPct: features.spectral.beta.power,
+      gammaPct: features.spectral.gamma.power,
+      adr: features.spectral.adr,
+      sef95: features.spectral.sef95,
+      contSuppressed: features.continuity.type === 'suppressed' ? 1 : 0,
+      contBurst: features.continuity.type === 'burst_suppression' ? 1 : 0,
+      contDiscontinuous: features.continuity.type === 'discontinuous' ? 1 : 0,
+      asymmetryIdx: features.asymmetry.index,
+      seizureBurdenMinPerHour: features.seizure.burdenMinutesPerHour,
+      artifactPct: features.artifacts.totalArtifactPct
+    };
+    
+    // Evaluate multiple decision trees
+    const treePredictions = this.trees.map(tree => tree.evaluate(mlFeatures));
+    const meanPrediction = treePredictions.reduce((a, b) => a + b, 0) / treePredictions.length;
+    
+    // Calculate confidence and generate prediction
+    const encephalopathyScore = Math.max(0, Math.min(10, meanPrediction));
+    const confidence = this.calculateConfidence(mlFeatures, treePredictions);
+    
+    return {
+      encephalopathyScore,
+      confidence,
+      features: mlFeatures,
+      severity: this.thresholdConfig.assessSeverity(features, 'ADULT'),
+      recommendations: this.generateRecommendations(encephalopathyScore, features)
+    };
   }
   
-  async predictEEGMetrics(eegData: EEGData): Promise<MLPrediction> {
-    const features = this.extractFeatures(eegData);
-    const prediction = this.model.predict(features);
-    return this.formatPrediction(prediction);
+  // Legacy method for backward compatibility
+  predictLegacy(session: Session): EnhancedMLPrediction {
+    // Convert legacy session data to qEEG features format
+    const qEEGFeatures = this.convertLegacySession(session);
+    return this.predict(qEEGFeatures);
+  }
+}
+```
+
+#### Sliding Window Processing for Real-Time Analysis
+```typescript
+// Real-Time Sliding Window Processor
+class SlidingWindowProcessor {
+  private processor: qEEGFeatureExtractor;
+  private mlModel: EnhancedRandomForestModel;
+  private state: RealTimeState;
+  
+  constructor(windowSize: number = 30, overlap: number = 15) {
+    this.processor = new qEEGFeatureExtractor();
+    this.mlModel = new EnhancedRandomForestModel();
+    this.state = this.initializeRealTimeState();
   }
   
-  private extractFeatures(data: EEGData): number[] {
-    // Feature extraction: delta power, theta power, etc.
+  startProcessing(intervalMs: number = 1000): void {
+    // Start continuous processing loop
+    this.processingInterval = setInterval(async () => {
+      const windowData = this.extractCurrentWindow();
+      const features = await this.processor.extractFeatures(windowData);
+      const prediction = this.mlModel.predict(features);
+      
+      // Generate alerts for critical conditions
+      const alerts = this.generateAlerts(features, prediction);
+      
+      // Update real-time state and trigger callbacks
+      this.updateRealTimeState(features, prediction, alerts);
+      this.triggerCallbacks(features, prediction, alerts);
+    }, intervalMs);
+  }
+  
+  addEEGData(data: EEGData): void {
+    // Add new data to circular buffer
+    this.state.buffer.samples.push(...data.samples);
+    this.state.buffer.timestamps.push(...data.timestamps);
+    this.maintainBufferSize();
+  }
+  
+  private generateAlerts(features: qEEGFeatures, prediction: MLPrediction): string[] {
+    const alerts: string[] = [];
+    
+    if (features.artifacts.totalArtifactPct > 0.3) {
+      alerts.push(`High artifact level: ${(features.artifacts.totalArtifactPct * 100).toFixed(1)}%`);
+    }
+    
+    if (prediction.encephalopathyScore > 7) {
+      alerts.push(`Severe encephalopathy: ${prediction.encephalopathyScore.toFixed(1)}/10`);
+    }
+    
+    if (features.seizure.burdenMinutesPerHour > 5) {
+      alerts.push(`High seizure burden: ${features.seizure.burdenMinutesPerHour.toFixed(1)} min/hour`);
+    }
+    
+    if (features.continuity.type === 'suppressed') {
+      alerts.push('EEG suppression detected');
+    }
+    
+    return alerts;
+  }
+}
+```
+
+#### Cohort-Specific Threshold Configuration
+```typescript
+// Threshold Configuration System
+class ThresholdConfiguration {
+  private cohortThresholds: Map<CohortType, CohortThresholds>;
+  
+  assessSeverity(features: qEEGFeatures, cohort: CohortType): SeverityAssessment {
+    const thresholds = this.cohortThresholds.get(cohort);
+    
+    return {
+      level: this.determineSeverityLevel(features, thresholds),
+      confidence: this.calculateSeverityConfidence(features, thresholds),
+      criticalFactors: this.identifyCriticalFactors(features, thresholds),
+      recommendations: this.generateSeverityRecommendations(features, thresholds)
+    };
   }
 }
 ```
